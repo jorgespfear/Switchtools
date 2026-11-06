@@ -1,54 +1,41 @@
-// Switch Speed Test: ping, descarga y subida usando HTTP simple (sin TLS).
+// Switch Speed Test: ping, descarga y subida contra el MISMO servidor (HTTP/HTTPS con libcurl).
 #include "ui.hpp"
+#include <curl/curl.h>
 #include <sys/socket.h>
-#include <sys/select.h>
-#include <sys/time.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <cerrno>
 #include <cstdlib>
 
 namespace {
 
-struct Server { const char* name; const char* host; const char* dlPath; const char* ulPath; };
-// El indice 0 del menu es AUTO (prueba todos en orden hasta que uno responda).
+struct Server { const char* name; const char* dlUrl; const char* ulUrl; };
+// Solo los servidores con ulUrl pueden medir la subida; el resto muestran "--" en subida.
 const Server SERVERS[] = {
-    {"TELE2 (EUROPA)",       "speedtest.tele2.net",              "/100MB.zip",                    "/upload.php"},
-    {"VULTR (MADRID)",       "mad-es-ping.vultr.com",            "/vultr.com.100MB.bin",          nullptr},
-    {"OVH (FRANCIA)",        "proof.ovh.net",                    "/files/100Mb.dat",              nullptr},
-    {"HETZNER (ALEMANIA)",   "speed.hetzner.de",                 "/100MB.bin",                    nullptr},
-    {"THINKBROADBAND (UK)",  "ipv4.download.thinkbroadband.com", "/100MB.zip",                    nullptr},
+    {"CLOUDFLARE",        "https://speed.cloudflare.com/__down?bytes=200000000", "https://speed.cloudflare.com/__up"},
+    {"TELE2 (EUROPA)",    "https://speedtest.tele2.net/100MB.zip",               "https://speedtest.tele2.net/upload.php"},
+    {"VULTR (MADRID)",    "https://mad-es-ping.vultr.com/vultr.com.100MB.bin",   nullptr},
+    {"OVH (FRANCIA)",     "https://proof.ovh.net/files/100Mb.dat",               nullptr},
+    {"HETZNER (ALEMANIA)","https://speed.hetzner.de/100MB.bin",                  nullptr},
 };
 constexpr int NUM_SERVERS = (int)(sizeof(SERVERS)/sizeof(SERVERS[0]));
-int sel = 0; // 0 = AUTO, 1..N = servidor concreto
-std::string selName() { return sel==0 ? std::string("AUTO") : std::string(SERVERS[sel-1].name); }
-std::vector<const Server*> candidates() {
-    std::vector<const Server*> v;
-    if(sel==0) { for(int i=0;i<NUM_SERVERS;i++) v.push_back(&SERVERS[i]); }
-    else v.push_back(&SERVERS[sel-1]);
-    return v;
-}
 constexpr double TEST_SECONDS = 10.0;
+int sel = 0; // 0 = AUTO, 1..N = servidor concreto
 
 bool quitApp = false, cancelled = false, running = false;
 std::string phase = "LISTO", status = "PULSA A PARA EMPEZAR", serverName = "-";
 double pingMs = -1, jitterMs = -1, downMbps = -1, upMbps = -1, liveMbps = 0, progress = 0;
 std::vector<double> hist;
 std::vector<std::string> logLines;
-std::string lastErr;
-void logAdd(const std::string& l) { logLines.push_back(l); if(logLines.size()>9) logLines.erase(logLines.begin()); }
 SDL_Color phaseColor = {145,155,178,255};
 
+void logAdd(const std::string& l) { logLines.push_back(l); if(logLines.size()>9) logLines.erase(logLines.begin()); }
 std::string val(double v, int dec = 1) { return v < 0 ? std::string("--") : fix(v, dec); }
+std::string selName() { return sel==0 ? std::string("AUTO") : std::string(SERVERS[sel-1].name); }
 
 void draw() {
     fill(0,0,W,H,C.bg);
     fill(0,0,W,78,C.panel);
     text(34,22,"SWITCH SPEED TEST",C.text,3);
-    text(930,27,"TEST POR HTTP",C.muted,2);
+    text(930,27,"TEST POR HTTPS",C.muted,2);
 
     card(28,98,390,150,"PING",val(pingMs,0),"MS",C.cyan);
     card(445,98,390,150,"DESCARGA",val(downMbps),"MBPS",C.green);
@@ -60,7 +47,7 @@ void draw() {
     text(52,360,running ? fix(liveMbps) : std::string("--"),C.text,6,500);
     text(52,415,"MBPS",C.muted,2);
     text(52,448,"< "+selName()+" >",running?C.muted:C.accent,2,500);
-    text(52,478,"HOST: "+serverName,C.muted,1,500);
+    text(52,478,"SERVIDOR: "+serverName,C.muted,1,500);
     text(52,505,"JITTER: "+(jitterMs<0?std::string("--"):fix(jitterMs)+" MS"),C.muted,2,500);
     bar(52,545,500,18,progress,phaseColor);
     if(!running && !logLines.empty() && downMbps < 0) {
@@ -87,56 +74,93 @@ bool tick() {
     return !cancelled;
 }
 
-bool waitFd(int fd, bool forWrite, int ms) {
-    fd_set s; FD_ZERO(&s); FD_SET(fd,&s);
-    timeval tv; tv.tv_sec = ms/1000; tv.tv_usec = (ms%1000)*1000;
-    int r = forWrite ? select(fd+1,nullptr,&s,nullptr,&tv) : select(fd+1,&s,nullptr,nullptr,&tv);
-    return r > 0;
-}
+// ---- Estado de una transferencia ----
+struct Xfer {
+    bool started = false, stop = false;
+    double t0 = 0, lastDraw = 0, lastSample = 0;
+    uint64_t total = 0, lastBytes = 0, chunkLeft = 0;
+};
+Xfer X;
 
-int connectTo(const char* host, int port, double* connectMs) {
-    addrinfo hints; std::memset(&hints,0,sizeof(hints));
-    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
-    addrinfo* res = nullptr;
-    char ps[16]; std::snprintf(ps,sizeof(ps),"%d",port);
-    int gai = getaddrinfo(host,ps,&hints,&res);
-    if(gai!=0 || !res) { lastErr = "DNS FALLO (CODIGO "+std::to_string(gai)+")"; return -1; }
-    int fd = socket(res->ai_family,res->ai_socktype,res->ai_protocol);
-    if(fd < 0) { freeaddrinfo(res); lastErr = "SOCKET ERRNO "+std::to_string(errno); return -1; }
-    double t0 = nowSec();
-    int r = connect(fd,res->ai_addr,res->ai_addrlen);   // conexion bloqueante
-    int ce = errno;
-    freeaddrinfo(res);
-    if(r < 0) { close(fd); lastErr = "CONNECT ERRNO "+std::to_string(ce); return -1; }
-    if(connectMs) *connectMs = (nowSec()-t0)*1000.0;
-    int fl = fcntl(fd,F_GETFL,0); if(fl>=0) fcntl(fd,F_SETFL,fl|O_NONBLOCK);
-    return fd;
-}
+void xferReset() { X = Xfer(); }
 
-bool sendAll(int fd, const char* data, size_t len) {
-    size_t sent = 0; double t0 = nowSec();
-    while(sent < len) {
-        if(nowSec()-t0 > 8.0) return false;
-        if(!waitFd(fd,true,100)) continue;
-        ssize_t n = send(fd,data+sent,len-sent,0);
-        if(n < 0) { if(errno==EAGAIN||errno==EWOULDBLOCK) continue; return false; }
-        sent += (size_t)n;
+// Actualiza muestras, grafica y pantalla. Devuelve false si hay que cortar.
+bool xferUpdate() {
+    double now = nowSec();
+    if(!X.started) { X.started = true; X.t0 = now; X.lastSample = now; }
+    if(now-X.lastSample >= 0.25) {
+        liveMbps = (double)(X.total-X.lastBytes)*8.0/1e6/(now-X.lastSample);
+        hist.push_back(liveMbps); X.lastBytes = X.total; X.lastSample = now;
     }
+    progress = std::min(1.0,(now-X.t0)/TEST_SECONDS);
+    if(now-X.lastDraw > 0.1) { X.lastDraw = now; if(!tick()) { X.stop = true; return false; } }
+    if(now-X.t0 >= TEST_SECONDS) { X.stop = true; return false; }
     return true;
 }
 
-bool runPing() {
-    phase = "PING"; phaseColor = C.cyan; progress = 0; hist.clear(); liveMbps = 0; logLines.clear();
-    const char* host = candidates()[0]->host; serverName = host;
-    status = "MIDIENDO LATENCIA...";
-    std::vector<double> t;
+size_t dlWrite(char*, size_t sz, size_t n, void*) {
+    size_t len = sz*n;
+    X.total += len;
+    return xferUpdate() ? len : 0;
+}
+size_t sinkWrite(char*, size_t sz, size_t n, void*) { return sz*n; }
+size_t ulRead(char* buf, size_t sz, size_t n, void*) {
+    size_t len = sz*n;
+    if(!xferUpdate()) return CURL_READFUNC_ABORT;
+    size_t give = (uint64_t)len < X.chunkLeft ? len : (size_t)X.chunkLeft;
+    std::memset(buf,0,give);
+    X.chunkLeft -= give; X.total += give;
+    return give;
+}
+int progressCb(void*, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    double now = nowSec();
+    if(now-X.lastDraw > 0.1) { X.lastDraw = now; if(!tick()) return 1; }
+    return cancelled ? 1 : 0;
+}
+
+CURL* newHandle(const char* url) {
+    CURL* c = curl_easy_init();
+    if(!c) return nullptr;
+    curl_easy_setopt(c,CURLOPT_URL,url);
+    curl_easy_setopt(c,CURLOPT_USERAGENT,"SwitchSpeedTest/0.2");
+    curl_easy_setopt(c,CURLOPT_SSL_VERIFYPEER,0L);   // la Switch no trae certificados raiz para curl
+    curl_easy_setopt(c,CURLOPT_SSL_VERIFYHOST,0L);
+    curl_easy_setopt(c,CURLOPT_FOLLOWLOCATION,1L);
+    curl_easy_setopt(c,CURLOPT_MAXREDIRS,3L);
+    curl_easy_setopt(c,CURLOPT_CONNECTTIMEOUT,8L);
+    curl_easy_setopt(c,CURLOPT_LOW_SPEED_LIMIT,1000L);
+    curl_easy_setopt(c,CURLOPT_LOW_SPEED_TIME,8L);
+    curl_easy_setopt(c,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(c,CURLOPT_NOPROGRESS,0L);
+    curl_easy_setopt(c,CURLOPT_XFERINFOFUNCTION,progressCb);
+    return c;
+}
+
+std::string codeStr(CURL* c) {
+    long code = 0; curl_easy_getinfo(c,CURLINFO_RESPONSE_CODE,&code);
+    return code ? " (HTTP "+std::to_string(code)+")" : "";
+}
+
+bool runPing(const Server& s) {
+    phase = "PING"; phaseColor = C.cyan; progress = 0; hist.clear(); liveMbps = 0;
+    status = std::string("MIDIENDO LATENCIA CON ")+s.name+"...";
+    std::vector<double> t; std::string lastErr;
     for(int i=0;i<6;i++) {
         if(!tick()) return false;
-        double ms = 0; int fd = connectTo(host,80,&ms);
-        if(fd >= 0) { close(fd); if(i>0) t.push_back(ms); } // el primero incluye DNS
+        CURL* c = newHandle(s.dlUrl);
+        if(!c) { lastErr = "CURL NO INICIA"; break; }
+        curl_easy_setopt(c,CURLOPT_NOBODY,1L);
+        curl_easy_setopt(c,CURLOPT_FRESH_CONNECT,1L);
+        curl_easy_setopt(c,CURLOPT_FORBID_REUSE,1L);
+        curl_easy_setopt(c,CURLOPT_TIMEOUT,12L);
+        CURLcode r = curl_easy_perform(c);
+        double ct = 0; curl_easy_getinfo(c,CURLINFO_CONNECT_TIME,&ct);
+        if(ct > 0) { if(i>0) t.push_back(ct*1000.0); }   // la primera incluye DNS/arranque
+        else lastErr = std::string(curl_easy_strerror(r))+codeStr(c);
+        curl_easy_cleanup(c);
         progress = (i+1)/6.0;
     }
-    if(t.empty()) { status = "NO SE PUDO CONECTAR AL SERVIDOR"; logAdd(std::string(host)+": "+lastErr); return false; }
+    if(t.empty()) { logAdd(std::string(s.name)+": "+(lastErr.empty()?"SIN CONEXION":lastErr)); return false; }
     double sum = 0; for(double v: t) sum += v;
     pingMs = sum/t.size();
     double jit = 0; for(size_t i=1;i<t.size();i++) jit += std::fabs(t[i]-t[i-1]);
@@ -144,127 +168,86 @@ bool runPing() {
     return true;
 }
 
-bool runDownload() {
+bool runDownload(const Server& s) {
     phase = "DESCARGA"; phaseColor = C.green; progress = 0; hist.clear(); liveMbps = 0;
-    static char buf[131072];
-    for(const Server* sp : candidates()) {
-        const Server& s = *sp;
-        if(cancelled) return false;
-        serverName = s.host; status = std::string("CONECTANDO A ")+s.host+"...";
-        if(!tick()) return false;
-        int fd = connectTo(s.host,80,nullptr);
-        if(fd < 0) { logAdd(std::string(s.name)+": "+lastErr); continue; }
-        std::string req = std::string("GET ")+s.dlPath+" HTTP/1.1\r\nHost: "+s.host+
-            "\r\nUser-Agent: SwitchSpeedTest\r\nAccept: */*\r\nConnection: close\r\n\r\n";
-        if(!sendAll(fd,req.data(),req.size())) { close(fd); logAdd(std::string(s.name)+": ERROR AL ENVIAR PETICION"); continue; }
-        status = "DESCARGANDO...";
-        std::string head; bool body = false; uint64_t total = 0, lastBytes = 0;
-        double start = nowSec(), t0 = 0, lastDraw = 0, lastSample = 0;
-        while(true) {
-            double now = nowSec();
-            if(now-lastDraw > 0.1) { if(!tick()) { close(fd); return false; } lastDraw = now; }
-            if(!body && now-start > 15.0) break;
-            if(body && now-t0 >= TEST_SECONDS) break;
-            if(!waitFd(fd,false,100)) continue;
-            ssize_t n = recv(fd,buf,sizeof(buf),0);
-            if(n == 0) break;
-            if(n < 0) { if(errno==EAGAIN||errno==EWOULDBLOCK) continue; break; }
-            if(!body) {
-                head.append(buf,(size_t)n);
-                size_t p = head.find("\r\n\r\n");
-                if(p == std::string::npos) { if(head.size()>8192) break; continue; }
-                int code = head.size()>=12 ? std::atoi(head.c_str()+9) : 0;
-                if(code != 200) {
-                    std::string loc; size_t lp = head.find("ocation: ");
-                    if(lp != std::string::npos) { size_t le = head.find("\r\n",lp); loc = head.substr(lp+9, le==std::string::npos?40:std::min<size_t>(le-lp-9,48)); }
-                    logAdd(std::string(s.name)+": HTTP "+std::to_string(code)+(loc.empty()?"":" -> "+loc));
-                    break;
-                }
-                body = true; t0 = nowSec(); lastSample = t0;
-                total = head.size()-(p+4); lastBytes = total;
-            } else total += (uint64_t)n;
-            now = nowSec();
-            if(body && now-lastSample >= 0.25) {
-                liveMbps = (double)(total-lastBytes)*8.0/1e6/(now-lastSample);
-                hist.push_back(liveMbps); lastBytes = total; lastSample = now;
-            }
-            if(body) progress = std::min(1.0,(now-t0)/TEST_SECONDS);
-        }
-        close(fd);
-        if(!body && head.empty()) logAdd(std::string(s.name)+": SIN RESPUESTA (TIMEOUT)");
-        if(body && total <= 100000) logAdd(std::string(s.name)+": DATOS INSUFICIENTES");
-        if(body && total > 100000) {
-            double el = nowSec()-t0; if(el < 0.1) el = 0.1;
-            downMbps = (double)total*8.0/1e6/el; liveMbps = downMbps; progress = 1;
-            return true;
-        }
+    status = "DESCARGANDO...";
+    xferReset();
+    CURL* c = newHandle(s.dlUrl);
+    if(!c) { logAdd("CURL NO INICIA"); return false; }
+    curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,dlWrite);
+    curl_easy_setopt(c,CURLOPT_TIMEOUT,40L);
+    CURLcode r = curl_easy_perform(c);
+    std::string code = codeStr(c);
+    curl_easy_cleanup(c);
+    if(cancelled) return false;
+    if(X.total > 100000 && (r==CURLE_OK || X.stop)) {
+        double el = nowSec()-X.t0; if(el < 0.1) el = 0.1;
+        downMbps = (double)X.total*8.0/1e6/el; liveMbps = downMbps; progress = 1;
+        return true;
     }
-    status = sel==0 ? "NO SE PUDO DESCARGAR DE NINGUN SERVIDOR" : "ESE SERVIDOR NO RESPONDE. PRUEBA OTRO O AUTO";
+    logAdd(std::string(s.name)+" BAJADA: "+curl_easy_strerror(r)+code);
     return false;
 }
 
-bool runUpload() {
+bool runUpload(const Server& s) {
     phase = "SUBIDA"; phaseColor = C.orange; progress = 0; hist.clear(); liveMbps = 0;
-    static char zeros[65536];
-    constexpr uint64_t CONTENT = 100ull*1024*1024;
-    // Solo Tele2 admite subida; si el servidor elegido no la tiene, se usa Tele2.
-    std::vector<const Server*> ups;
-    if(sel!=0 && SERVERS[sel-1].ulPath) ups.push_back(&SERVERS[sel-1]);
-    else ups.push_back(&SERVERS[0]);
-    for(const Server* sp : ups) {
-        const Server& s = *sp;
-        if(cancelled) return false;
-        serverName = s.host; status = std::string("CONECTANDO A ")+s.host+"... (SUBIDA)";
-        if(!tick()) return false;
-        int fd = connectTo(s.host,80,nullptr);
-        if(fd < 0) { logAdd(std::string("SUBIDA ")+s.name+": "+lastErr); continue; }
-        std::string req = std::string("POST ")+s.ulPath+" HTTP/1.1\r\nHost: "+s.host+
-            "\r\nUser-Agent: SwitchSpeedTest\r\nContent-Type: application/octet-stream\r\nContent-Length: "+
-            std::to_string(CONTENT)+"\r\nConnection: close\r\n\r\n";
-        if(!sendAll(fd,req.data(),req.size())) { close(fd); logAdd("SUBIDA: ERROR AL ENVIAR"); continue; }
-        status = "SUBIENDO...";
-        uint64_t total = 0, lastBytes = 0;
-        double t0 = nowSec(), lastDraw = 0, lastSample = t0;
-        while(total < CONTENT) {
-            double now = nowSec();
-            if(now-lastDraw > 0.1) { if(!tick()) { close(fd); return false; } lastDraw = now; }
-            if(now-t0 >= TEST_SECONDS) break;
-            if(!waitFd(fd,true,100)) continue;
-            ssize_t n = send(fd,zeros,sizeof(zeros),0);
-            if(n < 0) { if(errno==EAGAIN||errno==EWOULDBLOCK) continue; break; }
-            total += (uint64_t)n;
-            now = nowSec();
-            if(now-lastSample >= 0.25) {
-                liveMbps = (double)(total-lastBytes)*8.0/1e6/(now-lastSample);
-                hist.push_back(liveMbps); lastBytes = total; lastSample = now;
-            }
-            progress = std::min(1.0,(now-t0)/TEST_SECONDS);
-        }
-        close(fd);
-        if(total > 100000) {
-            double el = nowSec()-t0; if(el < 0.1) el = 0.1;
-            upMbps = (double)total*8.0/1e6/el; liveMbps = upMbps; progress = 1;
-            return true;
-        }
+    status = "SUBIENDO...";
+    xferReset();
+    constexpr uint64_t CHUNK = 8ull*1024*1024;
+    CURL* c = newHandle(s.ulUrl);
+    if(!c) { logAdd("CURL NO INICIA"); return false; }
+    curl_slist* hdr = nullptr;
+    hdr = curl_slist_append(hdr,"Content-Type: application/octet-stream");
+    hdr = curl_slist_append(hdr,"Expect:");
+    curl_easy_setopt(c,CURLOPT_HTTPHEADER,hdr);
+    curl_easy_setopt(c,CURLOPT_POST,1L);
+    curl_easy_setopt(c,CURLOPT_READFUNCTION,ulRead);
+    curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,sinkWrite);
+    curl_easy_setopt(c,CURLOPT_TIMEOUT,40L);
+    CURLcode r = CURLE_OK; std::string code;
+    while(!X.stop && !cancelled) {
+        X.chunkLeft = CHUNK;
+        curl_easy_setopt(c,CURLOPT_POSTFIELDSIZE_LARGE,(curl_off_t)CHUNK);
+        r = curl_easy_perform(c);
+        code = codeStr(c);
+        if(r != CURLE_OK) break;
     }
-    logAdd("SUBIDA: EL SERVIDOR CERRO LA CONEXION");
-    status = "LA SUBIDA NO ESTA DISPONIBLE (SERVIDOR NO RESPONDE)";
+    curl_easy_cleanup(c);
+    curl_slist_free_all(hdr);
+    if(cancelled) return false;
+    if(X.total > 100000) {
+        double el = nowSec()-X.t0; if(el < 0.1) el = 0.1;
+        upMbps = (double)X.total*8.0/1e6/el; liveMbps = upMbps; progress = 1;
+        return true;
+    }
+    logAdd(std::string(s.name)+" SUBIDA: "+curl_easy_strerror(r)+code);
     return false;
 }
 
 void runAll() {
-    running = true; cancelled = false;
-    pingMs = jitterMs = downMbps = upMbps = -1;
-    bool ok = runPing();
-    bool dlOk = false;
-    if(ok) dlOk = runDownload();
-    if(ok && !cancelled) runUpload();
+    running = true; cancelled = false; logLines.clear();
+    std::vector<const Server*> list;
+    if(sel==0) { for(int i=0;i<NUM_SERVERS;i++) list.push_back(&SERVERS[i]); }
+    else list.push_back(&SERVERS[sel-1]);
+
+    bool done = false; std::string note;
+    for(const Server* sp : list) {
+        const Server& s = *sp;
+        pingMs = jitterMs = downMbps = upMbps = -1;
+        serverName = s.name;
+        if(!runPing(s)) { if(cancelled) break; continue; }
+        if(!runDownload(s)) { if(cancelled) break; continue; }
+        done = true;
+        if(s.ulUrl) { if(!runUpload(s) && !cancelled) note = "LA SUBIDA FALLO EN ESTE SERVIDOR (VER DETALLE)"; }
+        else note = "ESTE SERVIDOR SOLO MIDE BAJADA. ELIGE CLOUDFLARE O TELE2 PARA SUBIDA";
+        break;
+    }
     running = false;
     if(cancelled) { phase = "CANCELADO"; status = "TEST CANCELADO. PULSA A PARA REPETIR"; phaseColor = C.red; }
-    else if(!ok) { phase = "ERROR"; phaseColor = C.red; }
+    else if(!done) { phase = "ERROR"; phaseColor = C.red; status = "NO SE PUDO MEDIR CON "+std::string(sel==0?"NINGUN SERVIDOR":"ESE SERVIDOR"); }
     else {
         phase = "COMPLETADO"; phaseColor = C.accent;
-        if(dlOk) status = "TEST TERMINADO. PULSA A PARA REPETIR";
+        status = note.empty() ? std::string("TEST TERMINADO CON ")+serverName+". PULSA A PARA REPETIR" : note;
     }
     cancelled = false;
 }
@@ -273,8 +256,7 @@ void runAll() {
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
-    // Buffers moderados para no limitar la velocidad. Si la Switch no puede crear
-    // sockets con ellos (ENOBUFS), se vuelve a la configuracion estandar.
+    // Buffers moderados; si la Switch no puede crear sockets con ellos (ENOBUFS), configuracion estandar.
     SocketInitConfig cfg = *socketGetDefaultInitConfig();
     cfg.tcp_tx_buf_size = 0x20000; cfg.tcp_rx_buf_size = 0x80000;
     cfg.tcp_tx_buf_max_size = 0x40000; cfg.tcp_rx_buf_max_size = 0x100000;
@@ -290,6 +272,7 @@ int main(int argc, char** argv) {
         netMode = "BUFFER ESTANDAR";
     }
     if(!initUI("Switch Speed Test")) { if(netOk) socketExit(); return 1; }
+    if(netOk) curl_global_init(CURL_GLOBAL_DEFAULT);
     if(!netOk) status = "NO SE PUDO INICIAR LA RED";
     else status = "PULSA A PARA EMPEZAR  ("+netMode+")";
     while(!quitApp && appletMainLoop()) {
@@ -305,6 +288,6 @@ int main(int argc, char** argv) {
         SDL_Delay(16);
     }
     shutdownUI();
-    if(netOk) socketExit();
+    if(netOk) { curl_global_cleanup(); socketExit(); }
     return 0;
 }
