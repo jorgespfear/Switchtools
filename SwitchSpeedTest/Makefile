@@ -24,7 +24,12 @@ CFLAGS  += $(INCLUDE) -D__SWITCH__ $(shell $(SDL2CONFIG) --cflags)
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
 ASFLAGS := -g $(ARCH)
 LDFLAGS  = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS    := $(shell $(SDL2CONFIG) --libs) -lnx
+PKGCONF  := $(DEVKITPRO)/portlibs/switch/bin/aarch64-none-elf-pkg-config
+CURLLIBS := $(shell $(PKGCONF) --static --libs libcurl 2>/dev/null)
+ifeq ($(strip $(CURLLIBS)),)
+CURLLIBS := -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz
+endif
+LIBS    := $(shell $(SDL2CONFIG) --libs) $(CURLLIBS) -lnx
 LIBDIRS := $(PORTLIBS) $(LIBNX)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
