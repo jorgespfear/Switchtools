@@ -13,15 +13,24 @@
 
 namespace {
 
-struct Server { const char* host; const char* path; };
-const Server DOWNLOADS[] = {
-    {"speedtest.tele2.net", "/100MB.zip"},
-    {"ipv4.download.thinkbroadband.com", "/100MB.zip"},
-    {"proof.ovh.net", "/files/100Mb.dat"},
+struct Server { const char* name; const char* host; const char* dlPath; const char* ulPath; };
+// El indice 0 del menu es AUTO (prueba todos en orden hasta que uno responda).
+const Server SERVERS[] = {
+    {"TELE2 (EUROPA)",       "speedtest.tele2.net",              "/100MB.zip",                    "/upload.php"},
+    {"VULTR (MADRID)",       "mad-es-ping.vultr.com",            "/vultr.com.100MB.bin",          nullptr},
+    {"OVH (FRANCIA)",        "proof.ovh.net",                    "/files/100Mb.dat",              nullptr},
+    {"HETZNER (ALEMANIA)",   "speed.hetzner.de",                 "/100MB.bin",                    nullptr},
+    {"THINKBROADBAND (UK)",  "ipv4.download.thinkbroadband.com", "/100MB.zip",                    nullptr},
 };
-const Server UPLOADS[] = {
-    {"speedtest.tele2.net", "/upload.php"},
-};
+constexpr int NUM_SERVERS = (int)(sizeof(SERVERS)/sizeof(SERVERS[0]));
+int sel = 0; // 0 = AUTO, 1..N = servidor concreto
+std::string selName() { return sel==0 ? std::string("AUTO") : std::string(SERVERS[sel-1].name); }
+std::vector<const Server*> candidates() {
+    std::vector<const Server*> v;
+    if(sel==0) { for(int i=0;i<NUM_SERVERS;i++) v.push_back(&SERVERS[i]); }
+    else v.push_back(&SERVERS[sel-1]);
+    return v;
+}
 constexpr double TEST_SECONDS = 10.0;
 
 bool quitApp = false, cancelled = false, running = false;
@@ -47,7 +56,8 @@ void draw() {
     text(52,330,"VELOCIDAD ACTUAL",C.muted,2);
     text(52,360,running ? fix(liveMbps) : std::string("--"),C.text,6,500);
     text(52,415,"MBPS",C.muted,2);
-    text(52,470,"SERVIDOR: "+serverName,C.muted,2,500);
+    text(52,448,"< "+selName()+" >",running?C.muted:C.accent,2,500);
+    text(52,478,"HOST: "+serverName,C.muted,1,500);
     text(52,505,"JITTER: "+(jitterMs<0?std::string("--"):fix(jitterMs)+" MS"),C.muted,2,500);
     bar(52,545,500,18,progress,phaseColor);
     graph(580,300,640,270,hist,phaseColor);
@@ -55,7 +65,7 @@ void draw() {
     fill(28,614,1224,36,C.panel);
     text(48,626,status,C.muted,1,1160);
     fill(28,660,1224,36,C.panel);
-    text(48,672,"A EMPEZAR   B CANCELAR   PLUS SALIR",C.muted,1);
+    text(48,672,"A EMPEZAR   B CANCELAR   IZQ/DER SERVIDOR   PLUS SALIR",C.muted,1);
     SDL_RenderPresent(renderer);
 }
 
@@ -113,7 +123,7 @@ bool sendAll(int fd, const char* data, size_t len) {
 
 bool runPing() {
     phase = "PING"; phaseColor = C.cyan; progress = 0; hist.clear(); liveMbps = 0;
-    const char* host = DOWNLOADS[0].host; serverName = host;
+    const char* host = candidates()[0]->host; serverName = host;
     status = "MIDIENDO LATENCIA...";
     std::vector<double> t;
     for(int i=0;i<6;i++) {
@@ -133,13 +143,14 @@ bool runPing() {
 bool runDownload() {
     phase = "DESCARGA"; phaseColor = C.green; progress = 0; hist.clear(); liveMbps = 0;
     static char buf[131072];
-    for(const Server& s : DOWNLOADS) {
+    for(const Server* sp : candidates()) {
+        const Server& s = *sp;
         if(cancelled) return false;
         serverName = s.host; status = std::string("CONECTANDO A ")+s.host+"...";
         if(!tick()) return false;
         int fd = connectTo(s.host,80,nullptr);
         if(fd < 0) continue;
-        std::string req = std::string("GET ")+s.path+" HTTP/1.1\r\nHost: "+s.host+
+        std::string req = std::string("GET ")+s.dlPath+" HTTP/1.1\r\nHost: "+s.host+
             "\r\nUser-Agent: SwitchSpeedTest\r\nAccept: */*\r\nConnection: close\r\n\r\n";
         if(!sendAll(fd,req.data(),req.size())) { close(fd); continue; }
         status = "DESCARGANDO...";
@@ -176,7 +187,7 @@ bool runDownload() {
             return true;
         }
     }
-    status = "NO SE PUDO DESCARGAR DE NINGUN SERVIDOR";
+    status = sel==0 ? "NO SE PUDO DESCARGAR DE NINGUN SERVIDOR" : "ESE SERVIDOR NO RESPONDE. PRUEBA OTRO O AUTO";
     return false;
 }
 
@@ -184,13 +195,18 @@ bool runUpload() {
     phase = "SUBIDA"; phaseColor = C.orange; progress = 0; hist.clear(); liveMbps = 0;
     static char zeros[65536];
     constexpr uint64_t CONTENT = 100ull*1024*1024;
-    for(const Server& s : UPLOADS) {
+    // Solo Tele2 admite subida; si el servidor elegido no la tiene, se usa Tele2.
+    std::vector<const Server*> ups;
+    if(sel!=0 && SERVERS[sel-1].ulPath) ups.push_back(&SERVERS[sel-1]);
+    else ups.push_back(&SERVERS[0]);
+    for(const Server* sp : ups) {
+        const Server& s = *sp;
         if(cancelled) return false;
-        serverName = s.host; status = std::string("CONECTANDO A ")+s.host+"...";
+        serverName = s.host; status = std::string("CONECTANDO A ")+s.host+"... (SUBIDA)";
         if(!tick()) return false;
         int fd = connectTo(s.host,80,nullptr);
         if(fd < 0) continue;
-        std::string req = std::string("POST ")+s.path+" HTTP/1.1\r\nHost: "+s.host+
+        std::string req = std::string("POST ")+s.ulPath+" HTTP/1.1\r\nHost: "+s.host+
             "\r\nUser-Agent: SwitchSpeedTest\r\nContent-Type: application/octet-stream\r\nContent-Length: "+
             std::to_string(CONTENT)+"\r\nConnection: close\r\n\r\n";
         if(!sendAll(fd,req.data(),req.size())) { close(fd); continue; }
@@ -255,6 +271,10 @@ int main(int argc, char** argv) {
         SDL_Event e; while(SDL_PollEvent(&e)) if(e.type==SDL_QUIT) quitApp = true;
         u64 d = padDown();
         if(d & HidNpadButton_Plus) quitApp = true;
+        if(!running) {
+            if(d & HidNpadButton_Left)  sel = (sel+NUM_SERVERS)%(NUM_SERVERS+1);
+            if(d & HidNpadButton_Right) sel = (sel+1)%(NUM_SERVERS+1);
+        }
         if((d & HidNpadButton_A) && !running && netOk) runAll();
         draw();
         SDL_Delay(16);
