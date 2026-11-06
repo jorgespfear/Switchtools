@@ -273,13 +273,25 @@ void runAll() {
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
+    // Buffers moderados para no limitar la velocidad. Si la Switch no puede crear
+    // sockets con ellos (ENOBUFS), se vuelve a la configuracion estandar.
     SocketInitConfig cfg = *socketGetDefaultInitConfig();
-    cfg.tcp_tx_buf_size = 0x100000; cfg.tcp_rx_buf_size = 0x200000;
-    cfg.tcp_tx_buf_max_size = 0x200000; cfg.tcp_rx_buf_max_size = 0x400000;
-    cfg.sb_efficiency = 4;
+    cfg.tcp_tx_buf_size = 0x20000; cfg.tcp_rx_buf_size = 0x80000;
+    cfg.tcp_tx_buf_max_size = 0x40000; cfg.tcp_rx_buf_max_size = 0x100000;
     bool netOk = R_SUCCEEDED(socketInitialize(&cfg));
+    std::string netMode = "BUFFER AMPLIADO";
+    if(netOk) {
+        int probe = socket(AF_INET,SOCK_STREAM,0);
+        if(probe < 0) { socketExit(); netOk = false; }
+        else close(probe);
+    }
+    if(!netOk) {
+        netOk = R_SUCCEEDED(socketInitializeDefault());
+        netMode = "BUFFER ESTANDAR";
+    }
     if(!initUI("Switch Speed Test")) { if(netOk) socketExit(); return 1; }
     if(!netOk) status = "NO SE PUDO INICIAR LA RED";
+    else status = "PULSA A PARA EMPEZAR  ("+netMode+")";
     while(!quitApp && appletMainLoop()) {
         SDL_Event e; while(SDL_PollEvent(&e)) if(e.type==SDL_QUIT) quitApp = true;
         u64 d = padDown();
