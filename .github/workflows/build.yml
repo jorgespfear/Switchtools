@@ -1,0 +1,33 @@
+name: Build NRO
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar SDL2 para Switch (con reintentos)
+        run: |
+          for i in 1 2 3 4 5; do
+            if dkp-pacman -Sy --noconfirm switch-sdl2; then exit 0; fi
+            echo "Intento $i fallido, reintentando en 30s..."
+            sleep 30
+          done
+          echo "Reintentando sin sincronizar bases de datos..."
+          dkp-pacman -S --noconfirm switch-sdl2
+      - name: Compilar Storage Analyzer
+        run: make -C SwitchStorageAnalyzer
+      - name: Compilar Speed Test
+        run: make -C SwitchSpeedTest
+      - name: Compilar SD Benchmark
+        run: make -C SDBenchmark
+      - name: Subir los .nro
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwitchTools-nro
+          path: |
+            SwitchStorageAnalyzer/SwitchStorageAnalyzer.nro
+            SwitchSpeedTest/SwitchSpeedTest.nro
+            SDBenchmark/SDBenchmark.nro
