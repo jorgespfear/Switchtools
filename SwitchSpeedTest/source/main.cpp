@@ -37,6 +37,9 @@ bool quitApp = false, cancelled = false, running = false;
 std::string phase = "LISTO", status = "PULSA A PARA EMPEZAR", serverName = "-";
 double pingMs = -1, jitterMs = -1, downMbps = -1, upMbps = -1, liveMbps = 0, progress = 0;
 std::vector<double> hist;
+std::vector<std::string> logLines;
+std::string lastErr;
+void logAdd(const std::string& l) { logLines.push_back(l); if(logLines.size()>9) logLines.erase(logLines.begin()); }
 SDL_Color phaseColor = {145,155,178,255};
 
 std::string val(double v, int dec = 1) { return v < 0 ? std::string("--") : fix(v, dec); }
@@ -60,7 +63,11 @@ void draw() {
     text(52,478,"HOST: "+serverName,C.muted,1,500);
     text(52,505,"JITTER: "+(jitterMs<0?std::string("--"):fix(jitterMs)+" MS"),C.muted,2,500);
     bar(52,545,500,18,progress,phaseColor);
-    graph(580,300,640,270,hist,phaseColor);
+    if(!running && !logLines.empty() && downMbps < 0) {
+        fill(580,300,640,270,C.panel2);
+        text(595,310,"DETALLE DEL ERROR:",C.red,2);
+        for(size_t i=0;i<logLines.size();i++) text(595,340+(int)i*24,logLines[i],C.text,1,610);
+    } else graph(580,300,640,270,hist,phaseColor);
 
     fill(28,614,1224,36,C.panel);
     text(48,626,status,C.muted,1,1160);
@@ -92,20 +99,17 @@ int connectTo(const char* host, int port, double* connectMs) {
     hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
     addrinfo* res = nullptr;
     char ps[16]; std::snprintf(ps,sizeof(ps),"%d",port);
-    if(getaddrinfo(host,ps,&hints,&res)!=0 || !res) return -1;
+    int gai = getaddrinfo(host,ps,&hints,&res);
+    if(gai!=0 || !res) { lastErr = "DNS FALLO (CODIGO "+std::to_string(gai)+")"; return -1; }
     int fd = socket(res->ai_family,res->ai_socktype,res->ai_protocol);
-    if(fd < 0) { freeaddrinfo(res); return -1; }
-    int fl = fcntl(fd,F_GETFL,0); fcntl(fd,F_SETFL,fl|O_NONBLOCK);
+    if(fd < 0) { freeaddrinfo(res); lastErr = "SOCKET ERRNO "+std::to_string(errno); return -1; }
     double t0 = nowSec();
-    int r = connect(fd,res->ai_addr,res->ai_addrlen);
+    int r = connect(fd,res->ai_addr,res->ai_addrlen);   // conexion bloqueante
+    int ce = errno;
     freeaddrinfo(res);
-    if(r < 0) {
-        if(errno!=EINPROGRESS && errno!=EWOULDBLOCK && errno!=EAGAIN) { close(fd); return -1; }
-        if(!waitFd(fd,true,5000)) { close(fd); return -1; }
-        int so = 0; socklen_t sl = sizeof(so);
-        if(getsockopt(fd,SOL_SOCKET,SO_ERROR,&so,&sl)!=0 || so!=0) { close(fd); return -1; }
-    }
+    if(r < 0) { close(fd); lastErr = "CONNECT ERRNO "+std::to_string(ce); return -1; }
     if(connectMs) *connectMs = (nowSec()-t0)*1000.0;
+    int fl = fcntl(fd,F_GETFL,0); if(fl>=0) fcntl(fd,F_SETFL,fl|O_NONBLOCK);
     return fd;
 }
 
@@ -122,7 +126,7 @@ bool sendAll(int fd, const char* data, size_t len) {
 }
 
 bool runPing() {
-    phase = "PING"; phaseColor = C.cyan; progress = 0; hist.clear(); liveMbps = 0;
+    phase = "PING"; phaseColor = C.cyan; progress = 0; hist.clear(); liveMbps = 0; logLines.clear();
     const char* host = candidates()[0]->host; serverName = host;
     status = "MIDIENDO LATENCIA...";
     std::vector<double> t;
@@ -132,7 +136,7 @@ bool runPing() {
         if(fd >= 0) { close(fd); if(i>0) t.push_back(ms); } // el primero incluye DNS
         progress = (i+1)/6.0;
     }
-    if(t.empty()) { status = "SIN CONEXION A INTERNET (COMPRUEBA EL WIFI)"; return false; }
+    if(t.empty()) { status = "NO SE PUDO CONECTAR AL SERVIDOR"; logAdd(std::string(host)+": "+lastErr); return false; }
     double sum = 0; for(double v: t) sum += v;
     pingMs = sum/t.size();
     double jit = 0; for(size_t i=1;i<t.size();i++) jit += std::fabs(t[i]-t[i-1]);
@@ -149,10 +153,10 @@ bool runDownload() {
         serverName = s.host; status = std::string("CONECTANDO A ")+s.host+"...";
         if(!tick()) return false;
         int fd = connectTo(s.host,80,nullptr);
-        if(fd < 0) continue;
+        if(fd < 0) { logAdd(std::string(s.name)+": "+lastErr); continue; }
         std::string req = std::string("GET ")+s.dlPath+" HTTP/1.1\r\nHost: "+s.host+
             "\r\nUser-Agent: SwitchSpeedTest\r\nAccept: */*\r\nConnection: close\r\n\r\n";
-        if(!sendAll(fd,req.data(),req.size())) { close(fd); continue; }
+        if(!sendAll(fd,req.data(),req.size())) { close(fd); logAdd(std::string(s.name)+": ERROR AL ENVIAR PETICION"); continue; }
         status = "DESCARGANDO...";
         std::string head; bool body = false; uint64_t total = 0, lastBytes = 0;
         double start = nowSec(), t0 = 0, lastDraw = 0, lastSample = 0;
@@ -169,7 +173,13 @@ bool runDownload() {
                 head.append(buf,(size_t)n);
                 size_t p = head.find("\r\n\r\n");
                 if(p == std::string::npos) { if(head.size()>8192) break; continue; }
-                if(head.size()<12 || std::atoi(head.c_str()+9)!=200) break;
+                int code = head.size()>=12 ? std::atoi(head.c_str()+9) : 0;
+                if(code != 200) {
+                    std::string loc; size_t lp = head.find("ocation: ");
+                    if(lp != std::string::npos) { size_t le = head.find("\r\n",lp); loc = head.substr(lp+9, le==std::string::npos?40:std::min<size_t>(le-lp-9,48)); }
+                    logAdd(std::string(s.name)+": HTTP "+std::to_string(code)+(loc.empty()?"":" -> "+loc));
+                    break;
+                }
                 body = true; t0 = nowSec(); lastSample = t0;
                 total = head.size()-(p+4); lastBytes = total;
             } else total += (uint64_t)n;
@@ -181,6 +191,8 @@ bool runDownload() {
             if(body) progress = std::min(1.0,(now-t0)/TEST_SECONDS);
         }
         close(fd);
+        if(!body && head.empty()) logAdd(std::string(s.name)+": SIN RESPUESTA (TIMEOUT)");
+        if(body && total <= 100000) logAdd(std::string(s.name)+": DATOS INSUFICIENTES");
         if(body && total > 100000) {
             double el = nowSec()-t0; if(el < 0.1) el = 0.1;
             downMbps = (double)total*8.0/1e6/el; liveMbps = downMbps; progress = 1;
@@ -205,11 +217,11 @@ bool runUpload() {
         serverName = s.host; status = std::string("CONECTANDO A ")+s.host+"... (SUBIDA)";
         if(!tick()) return false;
         int fd = connectTo(s.host,80,nullptr);
-        if(fd < 0) continue;
+        if(fd < 0) { logAdd(std::string("SUBIDA ")+s.name+": "+lastErr); continue; }
         std::string req = std::string("POST ")+s.ulPath+" HTTP/1.1\r\nHost: "+s.host+
             "\r\nUser-Agent: SwitchSpeedTest\r\nContent-Type: application/octet-stream\r\nContent-Length: "+
             std::to_string(CONTENT)+"\r\nConnection: close\r\n\r\n";
-        if(!sendAll(fd,req.data(),req.size())) { close(fd); continue; }
+        if(!sendAll(fd,req.data(),req.size())) { close(fd); logAdd("SUBIDA: ERROR AL ENVIAR"); continue; }
         status = "SUBIENDO...";
         uint64_t total = 0, lastBytes = 0;
         double t0 = nowSec(), lastDraw = 0, lastSample = t0;
@@ -235,6 +247,7 @@ bool runUpload() {
             return true;
         }
     }
+    logAdd("SUBIDA: EL SERVIDOR CERRO LA CONEXION");
     status = "LA SUBIDA NO ESTA DISPONIBLE (SERVIDOR NO RESPONDE)";
     return false;
 }
