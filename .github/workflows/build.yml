@@ -1,3 +1,7 @@
+Claude
+
+
+Build · YML
 name: Build NRO
 on:
   push:
@@ -8,14 +12,17 @@ jobs:
     container: devkitpro/devkita64:latest
     steps:
       - uses: actions/checkout@v4
-      - name: Instalar SDL2 y curl para Switch (con reintentos)
+      - name: Comprobar SDL2 y curl (instalar solo si faltan)
         run: |
+          if dkp-pacman -Q switch-sdl2 switch-curl; then
+            echo "SDL2 y curl ya estan instalados en la imagen"
+            exit 0
+          fi
           for i in 1 2 3 4 5; do
             if dkp-pacman -Sy --noconfirm switch-sdl2 switch-curl; then exit 0; fi
             echo "Intento $i fallido, reintentando en 30s..."
             sleep 30
           done
-          echo "Reintentando sin sincronizar bases de datos..."
           dkp-pacman -S --noconfirm switch-sdl2 switch-curl
       - name: Compilar Storage Analyzer
         run: make -C SwitchStorageAnalyzer
@@ -31,3 +38,5 @@ jobs:
             SwitchStorageAnalyzer/SwitchStorageAnalyzer.nro
             SwitchSpeedTest/SwitchSpeedTest.nro
             SDBenchmark/SDBenchmark.nro
+ 
+Claude ha terminado la respuesta
