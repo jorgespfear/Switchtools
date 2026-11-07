@@ -11,7 +11,7 @@ namespace {
 struct Server { const char* name; const char* dlUrl; const char* ulUrl; };
 // Solo los servidores con ulUrl pueden medir la subida; el resto muestran "--" en subida.
 const Server SERVERS[] = {
-    {"CLOUDFLARE",        "https://speed.cloudflare.com/__down?bytes=200000000", "https://speed.cloudflare.com/__up"},
+    {"CLOUDFLARE",        "https://speed.cloudflare.com/__down?bytes=100000000", "https://speed.cloudflare.com/__up"},
     {"TELE2 (EUROPA)",    "https://speedtest.tele2.net/100MB.zip",               "https://speedtest.tele2.net/upload.php"},
     {"VULTR (MADRID)",    "https://mad-es-ping.vultr.com/vultr.com.100MB.bin",   nullptr},
     {"OVH (FRANCIA)",     "https://proof.ovh.net/files/100Mb.dat",               nullptr},
@@ -126,7 +126,17 @@ CURL* newHandle(const char* url) {
     errBuf[0] = 0;
     curl_easy_setopt(c,CURLOPT_ERRORBUFFER,errBuf);
     curl_easy_setopt(c,CURLOPT_URL,url);
-    curl_easy_setopt(c,CURLOPT_USERAGENT,"SwitchSpeedTest/0.2");
+    curl_easy_setopt(c,CURLOPT_USERAGENT,"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    if(std::strstr(url,"cloudflare")) {
+        // Cloudflare rechaza peticiones que no parecen de su web de test.
+        static curl_slist* cfHdr = nullptr;
+        if(!cfHdr) {
+            cfHdr = curl_slist_append(cfHdr,"Accept: */*");
+            cfHdr = curl_slist_append(cfHdr,"Origin: https://speed.cloudflare.com");
+            cfHdr = curl_slist_append(cfHdr,"Referer: https://speed.cloudflare.com/");
+        }
+        curl_easy_setopt(c,CURLOPT_HTTPHEADER,cfHdr);
+    }
     curl_easy_setopt(c,CURLOPT_SSL_VERIFYPEER,0L);   // la Switch no trae certificados raiz para curl
     curl_easy_setopt(c,CURLOPT_SSL_VERIFYHOST,0L);
     curl_easy_setopt(c,CURLOPT_FOLLOWLOCATION,1L);
@@ -179,6 +189,7 @@ bool runDownload(const Server& s) {
     CURL* c = newHandle(s.dlUrl);
     if(!c) { logAdd("CURL NO INICIA"); return false; }
     curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,dlWrite);
+    curl_easy_setopt(c,CURLOPT_FAILONERROR,1L);   // no contar paginas de error como datos
     curl_easy_setopt(c,CURLOPT_TIMEOUT,40L);
     CURLcode r = curl_easy_perform(c);
     std::string code = codeStr(c);
