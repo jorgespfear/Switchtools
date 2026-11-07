@@ -60,7 +60,11 @@ export INCLUDE  := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
                    -I$(CURDIR)/$(BUILD)
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
+ifneq ($(wildcard $(CURDIR)/icon.jpg),)
+export APP_ICON := $(CURDIR)/icon.jpg
+else
 export APP_ICON := $(LIBNX)/default_icon.jpg
+endif
 export NROFLAGS += --icon=$(APP_ICON) --nacp=$(CURDIR)/$(TARGET).nacp
 
 .PHONY: $(BUILD) clean all
