@@ -1,7 +1,3 @@
-Claude
-
-
-Build · YML
 name: Build NRO
 on:
   push:
@@ -38,5 +34,3 @@ jobs:
             SwitchStorageAnalyzer/SwitchStorageAnalyzer.nro
             SwitchSpeedTest/SwitchSpeedTest.nro
             SDBenchmark/SDBenchmark.nro
- 
-Claude ha terminado la respuesta
