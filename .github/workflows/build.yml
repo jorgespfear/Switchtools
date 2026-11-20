@@ -26,6 +26,8 @@ jobs:
         run: make -C SwitchSpeedTest
       - name: Compilar SD Benchmark
         run: make -C SDBenchmark
+      - name: Compilar Save Sync
+        run: make -C SwitchSaveSync
       - name: Subir los .nro
         uses: actions/upload-artifact@v4
         with:
@@ -34,3 +36,4 @@ jobs:
             SwitchStorageAnalyzer/SwitchStorageAnalyzer.nro
             SwitchSpeedTest/SwitchSpeedTest.nro
             SDBenchmark/SDBenchmark.nro
+            SwitchSaveSync/SwitchSaveSync.nro
