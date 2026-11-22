@@ -272,7 +272,7 @@ void draw() {
         }
     }
     text(500,580,T("Y ORDEN: ","Y SORT: ")+(sortMode==0?T("TAMANO","SIZE"):sortMode==1?T("NOMBRE","NAME"):T("MENOR","SMALLEST")),C.muted,1);
-    text(500,608,T("X CAMBIAR GRAFICO  PLUS REESCANEAR  MINUS SALIR  ZL IDIOMA: ES","X SWITCH CHART  PLUS RESCAN  MINUS EXIT  ZL LANGUAGE: EN"),C.muted,1);
+    text(500,608,T("X CAMBIAR GRAFICO  PLUS REESCANEAR  MINUS SALIR  ZL IDIOMA: ES  ZR ACTUALIZAR","X SWITCH CHART  PLUS RESCAN  MINUS EXIT  ZL LANGUAGE: EN  ZR UPDATE"),C.muted,1);
     fill(28,660,1224,36,C.panel);
     text(48,672,statusText,C.muted,1,1160);
     SDL_RenderPresent(renderer);
@@ -301,8 +301,10 @@ void goUp() {
 }
 }
 
+#include "update.hpp"
+
 int main(int argc,char** argv) {
-    (void)argc; (void)argv;
+    (void)argc;
     if(SDL_Init(SDL_INIT_VIDEO)!=0) {
         return 1;
     }
@@ -330,6 +332,7 @@ int main(int argc,char** argv) {
         if(down & HidNpadButton_Plus) { statusText=T("REESCANEANDO...","RESCANNING..."); count=0; scanLimitHit=false; root=scanDir("sdmc:/","microSD",count); scanned=count; current=root.get(); selected=scroll=0; refreshVisible(); statusText=T("ESCANEO COMPLETO: ","SCAN COMPLETE: ")+std::to_string(scanned)+T(" ENTRADAS"," ENTRIES"); }
         if(down & HidNpadButton_Minus) running=false;
         if(down & HidNpadButton_ZL) langToggle();
+        if(down & HidNpadButton_ZR) { if(upd::run(argv[0], false)) running=false; }
         if(down & HidNpadButton_Down) { if(selected+1<(int)visible.size()) selected++; refreshVisible(); }
         if(down & HidNpadButton_Up) { if(selected>0) selected--; refreshVisible(); }
         if(down & HidNpadButton_L) { scroll=std::max(0,scroll-8); selected=std::max(0,selected-8); }

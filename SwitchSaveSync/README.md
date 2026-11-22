@@ -23,6 +23,7 @@ Back up your game saves to **your own Telegram bot** and restore them on any oth
 | | **−** | Refresh the cloud list |
 | | **+** | Exit |
 | | **ZL** | Switch language (ES/EN) |
+| | **ZR** | Check for app updates |
 | Cloud list | **A** | Restore the selected copy |
 | | **B** | Back |
 | Restore confirmation | ←/→ | Choose the target profile |
@@ -62,6 +63,7 @@ Copia tus partidas guardadas a **tu propio bot de Telegram** y restáuralas en c
 | | **−** | Actualizar la nube |
 | | **+** | Salir |
 | | **ZL** | Cambiar idioma (ES/EN) |
+| | **ZR** | Buscar actualizaciones de la app |
 | Nube | **A** | Restaurar la copia seleccionada |
 | | **B** | Volver |
 | Confirmar restauración | ←/→ | Elegir perfil de destino |

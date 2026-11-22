@@ -3,6 +3,7 @@
 #include "lang.hpp"
 #include "tg.hpp"
 #include "saves.hpp"
+#include "update.hpp"
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -465,7 +466,7 @@ void drawMain() {
         else if(u) text(720,yy,T("SIN SUBIR","NOT UPLOADED"),C.orange,2);
         else text(720,yy,T("AL DIA","UP TO DATE"),C.green,2);
     }
-    drawStatus(T("A SUBIR ESTA   Y SUBIR PENDIENTES   X VER NUBE / RESTAURAR   MINUS ACTUALIZAR NUBE   PLUS SALIR   ZL IDIOMA: ES","A UPLOAD THIS   Y UPLOAD PENDING   X CLOUD / RESTORE   MINUS REFRESH CLOUD   PLUS EXIT   ZL LANGUAGE: EN"));
+    drawStatus(T("A SUBIR ESTA   Y SUBIR PENDIENTES   X VER NUBE / RESTAURAR   MINUS ACTUALIZAR NUBE   PLUS SALIR   ZL IDIOMA: ES   ZR ACTUALIZAR APP","A UPLOAD THIS   Y UPLOAD PENDING   X CLOUD / RESTORE   MINUS REFRESH CLOUD   PLUS EXIT   ZL LANGUAGE: EN   ZR UPDATE APP"));
     SDL_RenderPresent(renderer);
 }
 
@@ -577,6 +578,7 @@ int main(int argc, char** argv) {
         u64 d = padDown();
         if(d & HidNpadButton_Plus) quitApp = true;
         if(d & HidNpadButton_ZL) { langToggle(); statusText = T("LISTO","READY"); }
+        if((d & HidNpadButton_ZR) && screen == S_MAIN) { if(upd::run(argv[0], netOk)) quitApp = true; continue; }
 
         if(screen == S_MAIN) {
             if(d & HidNpadButton_Down) selMain++;

@@ -14,17 +14,23 @@ INCLUDES    := include
 
 APP_TITLE   := SD Benchmark
 APP_AUTHOR  := Homebrew community
-APP_VERSION := 0.1.0
+APP_VERSION := 0.2.0
 
 SDL2CONFIG  := $(DEVKITPRO)/portlibs/switch/bin/sdl2-config
 
 ARCH    := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS  := -g -Wall -O2 -ffunction-sections $(ARCH) $(DEFINES)
+CFLAGS  += -DAPP_VERSION=\"$(APP_VERSION)\" -DAPP_TARGET=\"$(TARGET)\"
 CFLAGS  += $(INCLUDE) -D__SWITCH__ $(shell $(SDL2CONFIG) --cflags)
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
 ASFLAGS := -g $(ARCH)
 LDFLAGS  = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS    := $(shell $(SDL2CONFIG) --libs) -lnx
+PKGCONF  := $(DEVKITPRO)/portlibs/switch/bin/aarch64-none-elf-pkg-config
+CURLLIBS := $(shell $(PKGCONF) --static --libs libcurl 2>/dev/null)
+ifeq ($(strip $(CURLLIBS)),)
+CURLLIBS := -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz
+endif
+LIBS    := $(shell $(SDL2CONFIG) --libs) $(CURLLIBS) -lnx
 LIBDIRS := $(PORTLIBS) $(LIBNX)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))

@@ -1,6 +1,7 @@
 // SD Benchmark: velocidad secuencial y aleatoria (4K) de lectura/escritura en la microSD.
 #include "ui.hpp"
 #include "lang.hpp"
+#include "update.hpp"
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
@@ -56,7 +57,7 @@ void draw() {
     fill(28,614,1224,36,C.panel);
     text(48,626,status,C.muted,1,1160);
     fill(28,660,1224,36,C.panel);
-    text(48,672,T("A EMPEZAR   B CANCELAR   IZQ/DER TAMANO   PLUS SALIR   ZL IDIOMA: ES","A START   B CANCEL   LEFT/RIGHT SIZE   PLUS EXIT   ZL LANGUAGE: EN"),C.muted,1);
+    text(48,672,T("A EMPEZAR   B CANCELAR   IZQ/DER TAMANO   PLUS SALIR   ZL IDIOMA: ES   ZR ACTUALIZAR","A START   B CANCEL   LEFT/RIGHT SIZE   PLUS EXIT   ZL LANGUAGE: EN   ZR UPDATE"),C.muted,1);
     SDL_RenderPresent(renderer);
 }
 
@@ -176,7 +177,7 @@ void runAll() {
 } // namespace
 
 int main(int argc, char** argv) {
-    (void)argc; (void)argv;
+    (void)argc;
     langInit();
     phase = T("LISTO","READY"); status = T("PULSA A PARA EMPEZAR","PRESS A TO START");
     if(!initUI("SD Benchmark")) return 1;
@@ -189,6 +190,7 @@ int main(int argc, char** argv) {
             langToggle();
             phase = T("LISTO","READY"); status = T("PULSA A PARA EMPEZAR","PRESS A TO START");
         }
+        if(!running && (d & HidNpadButton_ZR)) { if(upd::run(argv[0], false)) quitApp = true; }
         if(!running) {
             if(d & HidNpadButton_Left)  sizeIdx = std::max(0,sizeIdx-1);
             if(d & HidNpadButton_Right) sizeIdx = std::min(3,sizeIdx+1);

@@ -1,6 +1,7 @@
 // Switch Speed Test: ping, descarga y subida contra el MISMO servidor (HTTP/HTTPS con libcurl).
 #include "ui.hpp"
 #include "lang.hpp"
+#include "update.hpp"
 #include <curl/curl.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -61,7 +62,7 @@ void draw() {
     fill(28,614,1224,36,C.panel);
     text(48,626,status,C.muted,1,1160);
     fill(28,660,1224,36,C.panel);
-    text(48,672,T("A EMPEZAR   B CANCELAR   IZQ/DER SERVIDOR   PLUS SALIR   ZL IDIOMA: ES","A START   B CANCEL   LEFT/RIGHT SERVER   PLUS EXIT   ZL LANGUAGE: EN"),C.muted,1);
+    text(48,672,T("A EMPEZAR   B CANCELAR   IZQ/DER SERVIDOR   PLUS SALIR   ZL IDIOMA: ES   ZR ACTUALIZAR","A START   B CANCEL   LEFT/RIGHT SERVER   PLUS EXIT   ZL LANGUAGE: EN   ZR UPDATE"),C.muted,1);
     SDL_RenderPresent(renderer);
 }
 
@@ -283,7 +284,7 @@ void runAll() {
 } // namespace
 
 int main(int argc, char** argv) {
-    (void)argc; (void)argv;
+    (void)argc;
     // Buffers moderados; si la Switch no puede crear sockets con ellos (ENOBUFS), configuracion estandar.
     langInit();
     phase = T("LISTO","READY");
@@ -313,6 +314,7 @@ int main(int argc, char** argv) {
             langToggle();
             phase = T("LISTO","READY"); status = T("PULSA A PARA EMPEZAR","PRESS A TO START");
         }
+        if(!running && (d & HidNpadButton_ZR)) { if(upd::run(argv[0], netOk)) quitApp = true; }
         if(!running) {
             if(d & HidNpadButton_Left)  sel = (sel+NUM_SERVERS)%(NUM_SERVERS+1);
             if(d & HidNpadButton_Right) sel = (sel+1)%(NUM_SERVERS+1);

@@ -14,12 +14,13 @@ INCLUDES    := include
 
 APP_TITLE   := Save Sync
 APP_AUTHOR  := Homebrew community
-APP_VERSION := 0.1.0
+APP_VERSION := 0.2.0
 
 SDL2CONFIG  := $(DEVKITPRO)/portlibs/switch/bin/sdl2-config
 
 ARCH    := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS  := -g -Wall -O2 -ffunction-sections $(ARCH) $(DEFINES)
+CFLAGS  += -DAPP_VERSION=\"$(APP_VERSION)\" -DAPP_TARGET=\"$(TARGET)\"
 CFLAGS  += $(INCLUDE) -D__SWITCH__ $(shell $(SDL2CONFIG) --cflags)
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
 ASFLAGS := -g $(ARCH)
