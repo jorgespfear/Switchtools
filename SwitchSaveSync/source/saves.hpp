@@ -15,6 +15,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "lang.hpp"
 
 namespace sv {
 
@@ -67,7 +68,7 @@ std::string nickOf(const AccountUid& uid) {
         if(R_SUCCEEDED(accountProfileGet(&prof, &ud, &base))) nick = base.nickname;
         accountProfileClose(&prof);
     }
-    return nick.empty() ? "USUARIO" : clean(nick);
+    return nick.empty() ? T("USUARIO","USER") : clean(nick);
 }
 
 // Lista los datos de guardado de usuario instalados en la consola.
@@ -227,22 +228,22 @@ bool addTree(gzFile gz, const std::string& rel, std::string& err, u64& done) {
     if(!listDir(ROOT + rel, items)) return true;
     for(const Item& it : items) {
         std::string r = rel + it.name;
-        if(!writeEntryHeader(gz, r, it.size, it.dir, it.mtime)) { err = "ERROR AL ESCRIBIR EL ARCHIVO (SD LLENA?)"; return false; }
+        if(!writeEntryHeader(gz, r, it.size, it.dir, it.mtime)) { err = T("ERROR AL ESCRIBIR EL ARCHIVO (SD LLENA?)","ERROR WRITING THE FILE (SD FULL?)"); return false; }
         if(it.dir) { if(!addTree(gz, r + "/", err, done)) return false; continue; }
         FILE* f = std::fopen((ROOT + r).c_str(), "rb");
-        if(!f) { err = "NO SE PUDO LEER " + r.substr(0, 40); return false; }
+        if(!f) { err = T("NO SE PUDO LEER ","COULD NOT READ ") + r.substr(0, 40); return false; }
         u64 left = it.size;
         while(left > 0) {
             size_t want = left < sizeof(ioBuf) ? (size_t)left : sizeof(ioBuf);
             size_t n = std::fread(ioBuf, 1, want, f);
-            if(n == 0) { std::fclose(f); err = "LECTURA INCOMPLETA DE " + r.substr(0, 40); return false; }
-            if(gzwrite(gz, ioBuf, (unsigned)n) != (int)n) { std::fclose(f); err = "ERROR AL ESCRIBIR EL ARCHIVO (SD LLENA?)"; return false; }
+            if(n == 0) { std::fclose(f); err = T("LECTURA INCOMPLETA DE ","INCOMPLETE READ OF ") + r.substr(0, 40); return false; }
+            if(gzwrite(gz, ioBuf, (unsigned)n) != (int)n) { std::fclose(f); err = T("ERROR AL ESCRIBIR EL ARCHIVO (SD LLENA?)","ERROR WRITING THE FILE (SD FULL?)"); return false; }
             left -= n; done += n;
         }
         std::fclose(f);
         size_t pad = (512 - (it.size % 512)) % 512;
         if(pad) { char z[512]; std::memset(z, 0, sizeof(z)); gzwrite(gz, z, (unsigned)pad); }
-        if(!pump(r)) { err = "CANCELADO"; return false; }
+        if(!pump(r)) { err = T("CANCELADO","CANCELLED"); return false; }
     }
     return true;
 }
@@ -250,7 +251,7 @@ bool addTree(gzFile gz, const std::string& rel, std::string& err, u64& done) {
 // Con la partida montada: crea outPath (.tar.gz).
 bool makeArchive(const std::string& outPath, u64& outSize, std::string& err) {
     gzFile gz = gzopen(outPath.c_str(), "wb6");
-    if(!gz) { err = "NO SE PUDO CREAR EL ARCHIVO EN LA SD"; return false; }
+    if(!gz) { err = T("NO SE PUDO CREAR EL ARCHIVO EN LA SD","COULD NOT CREATE THE FILE ON THE SD"); return false; }
     u64 done = 0;
     bool ok = addTree(gz, "", err, done);
     if(ok) {
@@ -258,7 +259,7 @@ bool makeArchive(const std::string& outPath, u64& outSize, std::string& err) {
         gzwrite(gz, z, sizeof(z));
     }
     int rc = gzclose(gz);
-    if(ok && rc != Z_OK) { ok = false; err = "ERROR AL CERRAR EL ARCHIVO"; }
+    if(ok && rc != Z_OK) { ok = false; err = T("ERROR AL CERRAR EL ARCHIVO","ERROR CLOSING THE FILE"); }
     if(!ok) { std::remove(outPath.c_str()); return false; }
     struct stat st; std::memset(&st, 0, sizeof(st));
     stat(outPath.c_str(), &st);
@@ -304,7 +305,7 @@ bool safeName(const std::string& n) {
 // Con la partida montada: borra el contenido actual y extrae el .tar.gz.
 bool extractArchive(const std::string& path, std::string& err) {
     gzFile gz = gzopen(path.c_str(), "rb");
-    if(!gz) { err = "NO SE PUDO ABRIR LA COPIA DESCARGADA"; return false; }
+    if(!gz) { err = T("NO SE PUDO ABRIR LA COPIA DESCARGADA","COULD NOT OPEN THE DOWNLOADED BACKUP"); return false; }
     wipeDir(ROOT, false);
     char h[512];
     bool ok = true;
@@ -320,16 +321,16 @@ bool extractArchive(const std::string& path, std::string& err) {
         char type = h[156];
         size_t pad = (512 - (size % 512)) % 512;
         if(type == 'L') {   // nombre largo GNU para la siguiente entrada
-            if(size == 0 || size > 4096) { err = "COPIA CON NOMBRE NO VALIDO"; ok = false; break; }
+            if(size == 0 || size > 4096) { err = T("COPIA CON NOMBRE NO VALIDO","BACKUP WITH AN INVALID NAME"); ok = false; break; }
             std::string data(size + pad, '\0');
-            if(!readFull(gz, &data[0], size + pad)) { err = "COPIA INCOMPLETA"; ok = false; break; }
+            if(!readFull(gz, &data[0], size + pad)) { err = T("COPIA INCOMPLETA","INCOMPLETE BACKUP"); ok = false; break; }
             longName = data.substr(0, strnlen(data.c_str(), size));
             continue;
         }
         if(!longName.empty()) { name = longName; longName.clear(); }
         bool isDir = (type == '5');
         bool isFile = (type == '0' || type == 0);
-        if((isDir || isFile) && !safeName(name)) { err = "COPIA CON RUTAS NO VALIDAS"; ok = false; break; }
+        if((isDir || isFile) && !safeName(name)) { err = T("COPIA CON RUTAS NO VALIDAS","BACKUP WITH INVALID PATHS"); ok = false; break; }
         if(isDir) {
             while(!name.empty() && name.back() == '/') name.pop_back();
             mkdirs(ROOT + name + "/x");
@@ -340,19 +341,19 @@ bool extractArchive(const std::string& path, std::string& err) {
         if(isFile) {
             mkdirs(ROOT + name);
             f = std::fopen((ROOT + name).c_str(), "wb");
-            if(!f) { err = "NO SE PUDO CREAR " + name.substr(0, 40); ok = false; break; }
+            if(!f) { err = T("NO SE PUDO CREAR ","COULD NOT CREATE ") + name.substr(0, 40); ok = false; break; }
         }
         u64 left = size;
         while(left > 0) {
             size_t want = left < sizeof(ioBuf) ? (size_t)left : sizeof(ioBuf);
             int r = gzread(gz, ioBuf, (unsigned)want);
-            if(r <= 0) { err = "COPIA INCOMPLETA O DANADA"; ok = false; break; }
-            if(f && std::fwrite(ioBuf, 1, (size_t)r, f) != (size_t)r) { err = "ESCRITURA FALLIDA (SAVE LLENO?)"; ok = false; break; }
+            if(r <= 0) { err = T("COPIA INCOMPLETA O DANADA","INCOMPLETE OR DAMAGED BACKUP"); ok = false; break; }
+            if(f && std::fwrite(ioBuf, 1, (size_t)r, f) != (size_t)r) { err = T("ESCRITURA FALLIDA (SAVE LLENO?)","WRITE FAILED (SAVE FULL?)"); ok = false; break; }
             left -= (u64)r;
         }
         if(f) std::fclose(f);
         if(!ok) break;
-        if(pad) { char z[512]; if(!readFull(gz, z, pad)) { err = "COPIA INCOMPLETA"; ok = false; break; } }
+        if(pad) { char z[512]; if(!readFull(gz, z, pad)) { err = T("COPIA INCOMPLETA","INCOMPLETE BACKUP"); ok = false; break; } }
         pump(name);
     }
     gzclose(gz);

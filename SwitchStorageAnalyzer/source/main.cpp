@@ -1,4 +1,5 @@
 #include <switch.h>
+#include "lang.hpp"
 #include <SDL.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -38,7 +39,7 @@ std::vector<Node*> visible;
 int selected = 0, scroll = 0;
 bool treemapMode = true;
 int sortMode = 0;
-std::string statusText = "Preparado";
+std::string statusText;
 size_t scanned = 0;
 bool scanLimitHit = false;
 
@@ -160,11 +161,11 @@ void scanProgress(int done) {
     SDL_Event e; while(SDL_PollEvent(&e)) if(e.type==SDL_QUIT) { /* finish scan safely */ }
     fill(0,0,W,H,C.bg);
     text(70,110,"SWITCH STORAGE ANALYZER",C.text,4);
-    text(70,190,"SCANNING MICROSD...",C.accent,3);
+    text(70,190,T("ESCANEANDO MICROSD...","SCANNING MICROSD..."),C.accent,3);
     fill(70,260,1100,22,C.panel2);
     fill(70,260,(int)(1100.0*std::min(done,(int)MAX_NODES)/(double)MAX_NODES),22,C.accent);
-    text(70,310,"ENTRIES VISITED: "+std::to_string(done),C.muted,2);
-    text(70,360,"PLEASE WAIT - LARGE CARDS MAY TAKE A WHILE",C.muted,2);
+    text(70,310,T("ENTRADAS VISITADAS: ","ENTRIES VISITED: ")+std::to_string(done),C.muted,2);
+    text(70,360,T("ESPERA - LAS TARJETAS GRANDES TARDAN UN POCO","PLEASE WAIT - LARGE CARDS MAY TAKE A WHILE"),C.muted,2);
     SDL_RenderPresent(renderer);
 }
 void refreshVisible() {
@@ -205,7 +206,7 @@ void donut(int cx,int cy,int outer,int inner,const std::vector<Node*>& items,uin
 }
 void drawTreemap(int x,int y,int w,int h,const std::vector<Node*>& items) {
     uint64_t total=0; for(auto* n:items) total+=n->bytes;
-    if(total==0) { text(x+15,y+20,"NO DATA TO DISPLAY",C.muted,2); return; }
+    if(total==0) { text(x+15,y+20,T("SIN DATOS PARA MOSTRAR","NO DATA TO DISPLAY"),C.muted,2); return; }
     int cur=x, gap=5, usable=w-gap*(int)items.size();
     SDL_Color cols[]={C.accent,C.cyan,C.green,C.orange,C.red,{180,130,220,255}};
     for(size_t i=0;i<items.size();i++) {
@@ -231,15 +232,15 @@ void draw() {
     uint64_t used=total>freeB?total-freeB:(root?root->bytes:0);
     text(52,116,"MICROSD",C.muted,2);
     text(52,148,human(total),C.text,3);
-    text(350,116,"USED",C.muted,2); text(350,148,human(used),C.accent,3);
-    text(620,116,"FREE",C.muted,2); text(620,148,human(freeB),C.green,3);
+    text(350,116,T("USADO","USED"),C.muted,2); text(350,148,human(used),C.accent,3);
+    text(620,116,T("LIBRE","FREE"),C.muted,2); text(620,148,human(freeB),C.green,3);
     int pct=total?std::min(100,(int)(used*100/total)):0;
     fill(890,137,320,18,C.panel2); fill(890,137,320*pct/100,18,C.accent);
-    text(890,164,std::to_string(pct)+"% USED",C.muted,1);
+    text(890,164,std::to_string(pct)+T("% USADO","% USED"),C.muted,1);
     // Main panels
     fill(28,222,430,420,C.panel);
     fill(476,222,776,420,C.panel);
-    text(50,242,"FOLDERS / FILES",C.text,2);
+    text(50,242,T("CARPETAS / ARCHIVOS","FOLDERS / FILES"),C.text,2);
     text(50,270,trimName(current?current->path:"sdmc:/",54),C.muted,1);
     int start=scroll;
     for(int i=start;i<(int)visible.size() && i<start+12;i++) {
@@ -251,8 +252,8 @@ void draw() {
         text(90,yy,trimName(n->name,29),sel?C.text:C.muted,1,225);
         text(330,yy,human(n->bytes),sel?C.text:C.muted,1,100);
     }
-    text(50,610,"A OPEN  B UP  X VIEW  Y SORT",C.muted,1);
-    text(500,242,treemapMode?"TREEMAP - SIZE BY AREA":"DONUT - SPACE DISTRIBUTION",C.text,2);
+    text(50,610,T("A ABRIR  B SUBIR  X VISTA  Y ORDEN","A OPEN  B UP  X VIEW  Y SORT"),C.muted,1);
+    text(500,242,treemapMode?T("TREEMAP - TAMANO POR AREA","TREEMAP - SIZE BY AREA"):T("DONUT - REPARTO DEL ESPACIO","DONUT - SPACE DISTRIBUTION"),C.text,2);
     if(treemapMode) {
         std::vector<Node*> top;
         for(size_t i=0;i<visible.size() && i<8;i++) top.push_back(visible[i]);
@@ -270,8 +271,8 @@ void draw() {
             text(988,yy+17,human(top[i]->bytes),C.muted,1,150);
         }
     }
-    text(500,580,"Y SORT: "+std::string(sortMode==0?"SIZE":sortMode==1?"NAME":"SMALLEST"),C.muted,1);
-    text(500,608,"X SWITCH CHART  PLUS RESCAN  MINUS EXIT",C.muted,1);
+    text(500,580,T("Y ORDEN: ","Y SORT: ")+(sortMode==0?T("TAMANO","SIZE"):sortMode==1?T("NOMBRE","NAME"):T("MENOR","SMALLEST")),C.muted,1);
+    text(500,608,T("X CAMBIAR GRAFICO  PLUS REESCANEAR  MINUS SALIR  ZL IDIOMA: ES","X SWITCH CHART  PLUS RESCAN  MINUS EXIT  ZL LANGUAGE: EN"),C.muted,1);
     fill(28,660,1224,36,C.panel);
     text(48,672,statusText,C.muted,1,1160);
     SDL_RenderPresent(renderer);
@@ -279,7 +280,7 @@ void draw() {
 void enterSelected() {
     if(selected<0 || selected>=(int)visible.size()) return;
     Node* n=visible[selected];
-    if(!n->directory) { statusText="FILE: "+n->name+" - "+human(n->bytes); return; }
+    if(!n->directory) { statusText=T("ARCHIVO: ","FILE: ")+n->name+" - "+human(n->bytes); return; }
     current=n; selected=0; scroll=0; refreshVisible();
 }
 void goUp() {
@@ -311,11 +312,12 @@ int main(int argc,char** argv) {
     if(!renderer) renderer=SDL_CreateRenderer(window,-1,SDL_RENDERER_SOFTWARE);
     if(!renderer){SDL_DestroyWindow(window);SDL_Quit();return 1;}
     SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
+    langInit();
     scanProgress(0);
     size_t count=0;
     root=scanDir("sdmc:/","microSD",count);
     scanned=count; current=root.get(); refreshVisible();
-    statusText="SCAN COMPLETE: "+std::to_string(scanned)+" ENTRIES"+(scanLimitHit?" (LIMIT REACHED)":"");
+    statusText=T("ESCANEO COMPLETO: ","SCAN COMPLETE: ")+std::to_string(scanned)+T(" ENTRADAS"," ENTRIES")+(scanLimitHit?T(" (LIMITE ALCANZADO)"," (LIMIT REACHED)"):std::string());
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
     padInitializeDefault(&pad);
@@ -325,8 +327,9 @@ int main(int argc,char** argv) {
         while(SDL_PollEvent(&ev)) if(ev.type==SDL_QUIT) running=false;
         padUpdate(&pad);
         u64 down=padGetButtonsDown(&pad);
-        if(down & HidNpadButton_Plus) { statusText="RESCANNING..."; count=0; scanLimitHit=false; root=scanDir("sdmc:/","microSD",count); scanned=count; current=root.get(); selected=scroll=0; refreshVisible(); statusText="SCAN COMPLETE: "+std::to_string(scanned)+" ENTRIES"; }
+        if(down & HidNpadButton_Plus) { statusText=T("REESCANEANDO...","RESCANNING..."); count=0; scanLimitHit=false; root=scanDir("sdmc:/","microSD",count); scanned=count; current=root.get(); selected=scroll=0; refreshVisible(); statusText=T("ESCANEO COMPLETO: ","SCAN COMPLETE: ")+std::to_string(scanned)+T(" ENTRADAS"," ENTRIES"); }
         if(down & HidNpadButton_Minus) running=false;
+        if(down & HidNpadButton_ZL) langToggle();
         if(down & HidNpadButton_Down) { if(selected+1<(int)visible.size()) selected++; refreshVisible(); }
         if(down & HidNpadButton_Up) { if(selected>0) selected--; refreshVisible(); }
         if(down & HidNpadButton_L) { scroll=std::max(0,scroll-8); selected=std::max(0,selected-8); }

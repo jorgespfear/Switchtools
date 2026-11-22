@@ -22,6 +22,7 @@ Back up your game saves to **your own Telegram bot** and restore them on any oth
 | | **X** | Open the cloud list (restore) |
 | | **−** | Refresh the cloud list |
 | | **+** | Exit |
+| | **ZL** | Switch language (ES/EN) |
 | Cloud list | **A** | Restore the selected copy |
 | | **B** | Back |
 | Restore confirmation | ←/→ | Choose the target profile |
@@ -31,6 +32,8 @@ Back up your game saves to **your own Telegram bot** and restore them on any oth
 - **AL DIA**: nothing to do. **SIN SUBIR**: changed since the last sync. **NUBE MAS NUEVA**: another console uploaded a newer copy. **CONFLICTO**: both changed — you decide which one to keep.
 
 ### Good to know
+- While uploading or downloading it shows the **live speed** (MB/s and Mbps), a speed graph, bytes transferred and the estimated time left.
+- The language (Spanish/English) follows your console language the first time; press **ZL** to change it. The choice is shared by all Switch Tools apps (`sd:/config/SwitchTools/lang.txt`).
 - Only **user saves** are handled (not system or device saves).
 - To restore, the game needs an existing save on the target console: launch the game once, create a new save, then restore.
 - Before overwriting, the app stores a copy of the current save in `sd:/switch/SwitchSaveSync/backups/`.
@@ -58,6 +61,7 @@ Copia tus partidas guardadas a **tu propio bot de Telegram** y restáuralas en c
 | | **X** | Abrir la nube (restaurar) |
 | | **−** | Actualizar la nube |
 | | **+** | Salir |
+| | **ZL** | Cambiar idioma (ES/EN) |
 | Nube | **A** | Restaurar la copia seleccionada |
 | | **B** | Volver |
 | Confirmar restauración | ←/→ | Elegir perfil de destino |
@@ -67,6 +71,8 @@ Copia tus partidas guardadas a **tu propio bot de Telegram** y restáuralas en c
 - **AL DIA**: nada que hacer. **SIN SUBIR**: cambió desde la última sincronización. **NUBE MAS NUEVA**: otra consola subió una copia más reciente. **CONFLICTO**: cambiaron las dos; tú decides cuál conservar.
 
 ### Conviene saber
+- Al subir o descargar muestra la **velocidad en tiempo real** (MB/s y Mbps), una gráfica, los bytes transferidos y el tiempo estimado.
+- El idioma (español/inglés) sigue el de tu consola la primera vez; pulsa **ZL** para cambiarlo. La elección es común a todas las apps de Switch Tools (`sd:/config/SwitchTools/lang.txt`).
 - Solo gestiona **partidas de usuario** (no las de sistema ni de consola).
 - Para restaurar, el juego debe tener ya una partida en la consola de destino: ábrelo una vez, crea una partida nueva y luego restaura.
 - Antes de sobrescribir, guarda una copia de la partida actual en `sd:/switch/SwitchSaveSync/backups/`.

@@ -1,5 +1,6 @@
 // Save Sync: copia las partidas guardadas a Telegram (tu propio bot) y las restaura en otra Switch.
 #include "ui.hpp"
+#include "lang.hpp"
 #include "tg.hpp"
 #include "saves.hpp"
 #include <sys/socket.h>
@@ -19,7 +20,7 @@ constexpr int KEEP_PER_SAVE = 5;   // versiones por juego+usuario+consola que se
 
 // ---------------- estado general ----------------
 bool quitApp = false, cancelled = false;
-std::string consoleName, statusText = "LISTO";
+std::string consoleName, statusText, lastAvg;
 std::vector<sv::LocalSave> saves;
 
 struct Entry {
@@ -118,23 +119,48 @@ void saveState() {
     std::fclose(f);
 }
 
-// ---------------- pantalla de trabajo (progreso) ----------------
+// ---------------- pantalla de trabajo (progreso + velocidad en tiempo real) ----------------
 std::string busyTitle, busyLine, busyDetail;
 double busyFrac = -1, lastBusyDraw = 0;
+int busyDir = 0;                                   // 0 = nada, 1 = subida, 2 = bajada
+double busyBase = 0, busyTotal = 0, busyDone = 0;  // bytes de partes anteriores / total / hechos
+double speedBps = 0, spT = 0, spB = 0, xferT0 = 0;
+std::vector<double> speedHist;                     // historial en MB/s para la grafica
+
+std::string rateStr(double bps) { return fix(bps / 1048576.0, 2) + " MB/S"; }
+std::string etaStr(double secs) {
+    if(secs < 0) secs = 0;
+    int t = (int)(secs + 0.5);
+    char b[24]; std::snprintf(b, sizeof(b), "%d:%02d", t / 60, t % 60);
+    return b;
+}
 
 void drawBusy() {
     fill(0,0,W,H,C.bg);
     fill(0,0,W,78,C.panel);
     text(34,22,"SAVE SYNC",C.text,3);
-    fill(28,120,1224,300,C.panel);
-    text(60,150,trimName(busyTitle,40),C.accent,3,1150);
-    text(60,215,busyLine,C.text,2,1150);
-    text(60,250,trimName(busyDetail,80),C.muted,1,1150);
+    fill(28,100,1224,520,C.panel);
+    text(60,125,trimName(busyTitle,40),C.accent,3,1150);
+    text(60,185,busyLine,C.text,2,1150);
+    text(60,218,trimName(busyDetail,80),C.muted,1,1150);
     if(busyFrac >= 0) {
-        bar(60,300,1160,24,busyFrac,C.accent);
-        text(60,340,fix(busyFrac*100,0)+"%",C.muted,2);
+        bar(60,262,1160,22,busyFrac,C.accent);
+        std::string info = fix(busyFrac*100,0)+"%";
+        if(busyDir != 0 && busyTotal > 0) {
+            info += "   " + human((uint64_t)busyDone) + " / " + human((uint64_t)busyTotal);
+            if(speedBps > 1024) info += "   " + T("QUEDAN ","ETA ") + etaStr((busyTotal - busyDone) / speedBps);
+        }
+        text(60,296,info,C.muted,2,1150);
     }
-    text(60,380,"B CANCELAR",C.muted,2);
+    if(busyDir != 0) {
+        SDL_Color c = busyDir == 1 ? C.orange : C.green;
+        text(60,350,busyDir == 1 ? T("SUBIDA","UPLOAD") : T("BAJADA","DOWNLOAD"),c,2);
+        text(60,385,fix(speedBps / 1048576.0, 2) + " MB/S",C.text,5,540);
+        text(60,450,fix(speedBps * 8.0 / 1e6, 1) + " MBPS",C.muted,3,540);
+        graph(620,340,600,170,speedHist,c);
+        text(620,518,T("VELOCIDAD EN TIEMPO REAL (MB/S)","LIVE SPEED (MB/S)"),C.muted,1);
+    }
+    text(60,570,T("B CANCELAR","B CANCEL"),C.muted,2);
     SDL_RenderPresent(renderer);
 }
 
@@ -147,10 +173,35 @@ bool busyTick(bool force = false) {
     if(force || now - lastBusyDraw > 0.1) { lastBusyDraw = now; drawBusy(); }
     return !cancelled;
 }
-bool tgProgress(double now, double total) { busyFrac = total > 0 ? now / total : -1; return busyTick(); }
+
+// Empieza a medir una transferencia (dir: 1 = subida, 2 = bajada) de totalBytes bytes en total.
+void speedReset(int dir, double totalBytes) {
+    busyDir = dir; busyTotal = totalBytes; busyBase = 0; busyDone = 0;
+    speedBps = 0; spT = 0; spB = 0; speedHist.clear(); xferT0 = nowSec();
+}
+double avgBps() { double el = nowSec() - xferT0; return el > 0.2 ? busyTotal / el : 0; }
+
+bool tgProgress(double now, double total) {
+    if(busyDir != 0) {
+        if(total >= 4096) {   // ignora las llamadas pequenas a la API
+            double t = nowSec();
+            if(spT == 0 || now < spB) { spT = t; spB = now; }   // primera muestra o trozo nuevo
+            else if(t - spT >= 0.5) {
+                double v = (now - spB) / (t - spT);
+                speedBps = speedBps > 0 ? speedBps * 0.4 + v * 0.6 : v;
+                speedHist.push_back(speedBps / 1048576.0);
+                spB = now; spT = t;
+            }
+            busyDone = busyBase + now;
+            busyFrac = busyTotal > 0 ? std::min(1.0, busyDone / busyTotal) : (total > 0 ? now / total : -1);
+        }
+    } else busyFrac = total > 0 ? now / total : -1;
+    return busyTick();
+}
 bool svPump(const std::string& s) { if(!s.empty()) busyDetail = s; return busyTick(); }
 void busyStart(const std::string& title, const std::string& line) {
     busyTitle = title; busyLine = line; busyDetail = ""; busyFrac = -1; cancelled = false;
+    busyDir = 0; speedBps = 0; speedHist.clear();
     busyTick(true);
 }
 
@@ -198,18 +249,18 @@ void normalize(std::vector<Entry>& v) {
 bool cloudReady() { return !tg::token.empty() && !tg::chatId.empty(); }
 
 bool refreshIndex() {
-    busyStart("SINCRONIZANDO", "DESCARGANDO INDICE DE LA NUBE...");
+    busyStart(T("SINCRONIZANDO","SYNCING"), T("DESCARGANDO INDICE DE LA NUBE...","DOWNLOADING CLOUD INDEX..."));
     std::string text;
-    if(!tg::getIndex(text)) { statusText = "ERROR INDICE: " + tg::lastError; return false; }
+    if(!tg::getIndex(text)) { statusText = T("ERROR INDICE: ","INDEX ERROR: ") + tg::lastError; return false; }
     cloud = parse(text); normalize(cloud);
     selCloud = scrCloud = 0;
     return true;
 }
 
 bool ensureCloud() {
-    if(tg::token.empty()) { statusText = "FALTA EL TOKEN: EDITA sdmc:/switch/SwitchSaveSync/config.ini"; return false; }
+    if(tg::token.empty()) { statusText = T("FALTA EL TOKEN: EDITA sdmc:/switch/SwitchSaveSync/config.ini","MISSING TOKEN: EDIT sdmc:/switch/SwitchSaveSync/config.ini"); return false; }
     if(tg::chatId.empty()) {
-        busyStart("CONFIGURANDO", "BUSCANDO TU CHAT DE TELEGRAM...");
+        busyStart(T("CONFIGURANDO","SETTING UP"), T("BUSCANDO TU CHAT DE TELEGRAM...","LOOKING FOR YOUR TELEGRAM CHAT..."));
         if(!tg::discoverChat()) { statusText = "CHAT: " + tg::lastError; return false; }
         saveConfig();
     }
@@ -231,53 +282,56 @@ bool cloudNewer(const sv::LocalSave& s) {
 // ---------------- subir ----------------
 bool uploadSave(size_t i, Entry& e) {
     sv::LocalSave& s = saves[i];
-    busyStart("SUBIENDO: " + trimName(s.name, 34), "CREANDO COPIA...");
+    busyStart(T("SUBIENDO: ","UPLOADING: ") + trimName(s.name, 34), T("CREANDO COPIA...","CREATING BACKUP..."));
     std::string path = BACKUP_DIR + "/upload.tar.gz", err;
-    if(!sv::mount(s)) { statusText = "NO SE PUDO ABRIR LA PARTIDA DE " + trimName(s.name, 30); return false; }
+    if(!sv::mount(s)) { statusText = T("NO SE PUDO ABRIR LA PARTIDA DE ","COULD NOT OPEN THE SAVE OF ") + trimName(s.name, 30); return false; }
     u64 sz = 0;
     bool ok = sv::makeArchive(path, sz, err);
     sv::unmount();
     if(!ok) { statusText = err; return false; }
 
     FILE* f = std::fopen(path.c_str(), "rb");
-    if(!f) { statusText = "NO SE PUDO LEER LA COPIA"; return false; }
+    if(!f) { statusText = T("NO SE PUDO LEER LA COPIA","COULD NOT READ THE BACKUP"); return false; }
     long long ts = (long long)time(nullptr);
     u64 parts = (sz + tg::CHUNK - 1) / tg::CHUNK;
     if(parts == 0) parts = 1;
     e = Entry(); e.tid = s.tid; e.name = s.name; e.nick = s.nick; e.console = consoleName; e.ts = ts; e.size = sz;
+    speedReset(1, (double)sz);
     for(u64 p = 0; p < parts; p++) {
+        busyBase = (double)p * (double)tg::CHUNK;
         u64 base = p * tg::CHUNK, len = std::min<u64>(tg::CHUNK, sz - base);
-        busyLine = "SUBIENDO PARTE " + std::to_string(p + 1) + " DE " + std::to_string(parts) + " (" + sizeStr(sz) + ")";
+        busyLine = T("SUBIENDO PARTE ","UPLOADING PART ") + std::to_string(p + 1) + T(" DE "," OF ") + std::to_string(parts) + " (" + sizeStr(sz) + ")";
         busyDetail = ""; busyFrac = 0;
         std::string fid, mid;
         std::string fname = sv::tidHex(s.tid) + "_" + std::to_string(ts) + "_p" + std::to_string(p + 1) + "of" + std::to_string(parts) + ".bin";
         std::string cap = s.name + " | " + s.nick + " | " + consoleName + " | " + dateStr(ts);
         if(!tg::sendDocument(f, base, len, fname, cap, fid, mid)) {
             std::fclose(f); std::remove(path.c_str());
-            statusText = cancelled ? "SUBIDA CANCELADA" : "ERROR AL SUBIR: " + tg::lastError;
+            statusText = cancelled ? T("SUBIDA CANCELADA","UPLOAD CANCELLED") : T("ERROR AL SUBIR: ","UPLOAD ERROR: ") + tg::lastError;
             return false;
         }
         e.ids.push_back(fid);
     }
     std::fclose(f);
     std::remove(path.c_str());
+    { double av = avgBps(); lastAvg = av > 0 ? " [" + T("MEDIA ","AVG ") + rateStr(av) + "]" : std::string(); }
     return true;
 }
 
 // Fusiona las nuevas entradas con el indice de la nube y lo vuelve a anclar.
 bool commitEntries(const std::vector<Entry>& add, const std::vector<size_t>& idx) {
-    busyStart("SINCRONIZANDO", "ACTUALIZANDO EL INDICE...");
+    busyStart(T("SINCRONIZANDO","SYNCING"), T("ACTUALIZANDO EL INDICE...","UPDATING THE INDEX..."));
     std::string text;
-    if(!tg::getIndex(text)) { statusText = "ERROR INDICE: " + tg::lastError; return false; }
+    if(!tg::getIndex(text)) { statusText = T("ERROR INDICE: ","INDEX ERROR: ") + tg::lastError; return false; }
     std::vector<Entry> all = parse(text);
     for(const Entry& e : add) all.push_back(e);
     normalize(all);
     FILE* f = std::fopen(INDEX_PATH.c_str(), "wb");
-    if(!f) { statusText = "NO SE PUDO ESCRIBIR EL INDICE"; return false; }
+    if(!f) { statusText = T("NO SE PUDO ESCRIBIR EL INDICE","COULD NOT WRITE THE INDEX"); return false; }
     std::string out = serialize(all);
     std::fwrite(out.data(), 1, out.size(), f);
     std::fclose(f);
-    if(!tg::putIndex(INDEX_PATH)) { statusText = "ERROR AL SUBIR EL INDICE: " + tg::lastError; return false; }
+    if(!tg::putIndex(INDEX_PATH)) { statusText = T("ERROR AL SUBIR EL INDICE: ","ERROR UPLOADING THE INDEX: ") + tg::lastError; return false; }
     cloud = all;
     for(size_t k = 0; k < add.size(); k++) {
         SyncRec r; r.ts = add[k].ts; r.sig = saves[idx[k]].sig;
@@ -291,79 +345,82 @@ void uploadOne(size_t i) {
     if(!ensureCloud()) return;
     Entry e;
     if(!uploadSave(i, e)) return;
-    if(commitEntries({e}, {i})) statusText = "SUBIDO: " + trimName(saves[i].name, 40);
+    if(commitEntries({e}, {i})) statusText = T("SUBIDO: ","UPLOADED: ") + trimName(saves[i].name, 40) + lastAvg;
 }
 
 void uploadAllPending() {
     if(!ensureCloud()) return;
     std::vector<Entry> add; std::vector<size_t> idx;
-    int skipped = 0;
+    int skipped = 0; bool failed = false;
     for(size_t i = 0; i < saves.size(); i++) {
         if(!unsynced(saves[i])) continue;
         if(cloudNewer(saves[i])) { skipped++; continue; }
         Entry e;
-        if(!uploadSave(i, e)) break;
+        if(!uploadSave(i, e)) { failed = true; break; }
         add.push_back(e); idx.push_back(i);
     }
-    if(add.empty()) { if(statusText == "LISTO" || skipped) statusText = skipped ? "NADA SUBIDO: HAY CONFLICTOS (VER LA NUBE)" : "NO HAY PARTIDAS PENDIENTES"; return; }
-    if(commitEntries(add, idx)) statusText = "SUBIDAS " + std::to_string(add.size()) + " PARTIDAS" + (skipped ? " (" + std::to_string(skipped) + " EN CONFLICTO OMITIDAS)" : "");
+    if(add.empty()) { if(!failed) statusText = skipped ? T("NADA SUBIDO: HAY CONFLICTOS (VER LA NUBE)","NOTHING UPLOADED: CONFLICTS FOUND (CHECK THE CLOUD)") : T("NO HAY PARTIDAS PENDIENTES","NO PENDING SAVES"); return; }
+    if(commitEntries(add, idx)) statusText = T("SUBIDAS ","UPLOADED ") + std::to_string(add.size()) + T(" PARTIDAS"," SAVES") + (skipped ? " (" + std::to_string(skipped) + T(" EN CONFLICTO OMITIDAS)"," SKIPPED DUE TO CONFLICT)") : "");
 }
 
 // ---------------- restaurar ----------------
 void restore(const Entry& e, size_t localIdx) {
     sv::LocalSave& s = saves[localIdx];
     std::string dl = BACKUP_DIR + "/restore.tar.gz", err;
-    busyStart("RESTAURANDO: " + trimName(e.name, 32), "DESCARGANDO...");
+    busyStart(T("RESTAURANDO: ","RESTORING: ") + trimName(e.name, 32), T("DESCARGANDO...","DOWNLOADING..."));
     FILE* f = std::fopen(dl.c_str(), "wb");
-    if(!f) { statusText = "NO SE PUDO CREAR EL ARCHIVO TEMPORAL"; return; }
+    if(!f) { statusText = T("NO SE PUDO CREAR EL ARCHIVO TEMPORAL","COULD NOT CREATE THE TEMPORARY FILE"); return; }
+    speedReset(2, (double)e.size);
     for(size_t p = 0; p < e.ids.size(); p++) {
-        busyLine = "DESCARGANDO PARTE " + std::to_string(p + 1) + " DE " + std::to_string(e.ids.size());
+        busyBase = (double)p * (double)tg::CHUNK;
+        busyLine = T("DESCARGANDO PARTE ","DOWNLOADING PART ") + std::to_string(p + 1) + T(" DE "," OF ") + std::to_string(e.ids.size());
         busyFrac = 0;
         if(!tg::download(e.ids[p], nullptr, f)) {
             std::fclose(f); std::remove(dl.c_str());
-            statusText = cancelled ? "RESTAURACION CANCELADA (NO SE HA TOCADO LA PARTIDA)" : "ERROR AL DESCARGAR: " + tg::lastError;
+            statusText = cancelled ? T("RESTAURACION CANCELADA (NO SE HA TOCADO LA PARTIDA)","RESTORE CANCELLED (THE SAVE WAS NOT TOUCHED)") : T("ERROR AL DESCARGAR: ","DOWNLOAD ERROR: ") + tg::lastError;
             return;
         }
     }
     std::fclose(f);
+    double dlAvg = avgBps();
     struct stat st; std::memset(&st, 0, sizeof(st)); stat(dl.c_str(), &st);
     if((u64)st.st_size != e.size) {
         std::remove(dl.c_str());
-        statusText = "DESCARGA INCOMPLETA (TAMANO DISTINTO). NO SE HA TOCADO LA PARTIDA";
+        statusText = T("DESCARGA INCOMPLETA (TAMANO DISTINTO). NO SE HA TOCADO LA PARTIDA","INCOMPLETE DOWNLOAD (SIZE MISMATCH). THE SAVE WAS NOT TOUCHED");
         return;
     }
 
     // Copia de seguridad de la partida actual antes de sobrescribir.
-    busyLine = "COPIA DE SEGURIDAD DE LA PARTIDA ACTUAL..."; busyFrac = -1; busyDetail = "";
+    busyLine = T("COPIA DE SEGURIDAD DE LA PARTIDA ACTUAL...","BACKING UP THE CURRENT SAVE..."); busyFrac = -1; busyDetail = "";
     cancelled = false;
-    if(!sv::mount(s)) { std::remove(dl.c_str()); statusText = "NO SE PUDO ABRIR LA PARTIDA LOCAL"; return; }
+    if(!sv::mount(s)) { std::remove(dl.c_str()); statusText = T("NO SE PUDO ABRIR LA PARTIDA LOCAL","COULD NOT OPEN THE LOCAL SAVE"); return; }
     std::string pre = BACKUP_DIR + "/antes_" + sv::tidHex(s.tid) + "_" + std::to_string((long long)time(nullptr)) + ".tar.gz";
     u64 psz = 0;
     if(!sv::makeArchive(pre, psz, err)) {
         sv::unmount(); std::remove(dl.c_str());
-        statusText = "NO SE PUDO HACER LA COPIA PREVIA: " + err + ". NO SE HA TOCADO NADA";
+        statusText = T("NO SE PUDO HACER LA COPIA PREVIA: ","COULD NOT MAKE THE SAFETY BACKUP: ") + err + T(". NO SE HA TOCADO NADA",". NOTHING WAS TOUCHED");
         return;
     }
 
     // A partir de aqui no se puede cancelar.
-    busyLine = "ESCRIBIENDO LA PARTIDA..."; busyDetail = "";
+    busyLine = T("ESCRIBIENDO LA PARTIDA...","WRITING THE SAVE..."); busyDetail = "";
     cancelled = false;
     bool ok = sv::extractArchive(dl, err);
     if(ok) ok = sv::commit();
-    if(!ok && err.empty()) err = "NO SE PUDO CONFIRMAR LA ESCRITURA";
+    if(!ok && err.empty()) err = T("NO SE PUDO CONFIRMAR LA ESCRITURA","COULD NOT COMMIT THE WRITE");
     u64 total = 0; std::string sig;
     if(ok) sv::signature(total, sig);
     sv::unmount();
     std::remove(dl.c_str());
     if(!ok) {
-        statusText = "ERROR: " + err + ". COPIA PREVIA EN backups/" + trimName(pre.substr(pre.rfind('/') + 1), 40);
+        statusText = "ERROR: " + err + T(". COPIA PREVIA EN backups/",". SAFETY BACKUP IN backups/") + trimName(pre.substr(pre.rfind('/') + 1), 40);
         return;
     }
     s.sig = sig; s.size = total;
     SyncRec r; r.ts = e.ts; r.sig = sig;
     synced[keyOf(s)] = r;
     saveState();
-    statusText = "RESTAURADO: " + trimName(e.name, 30) + " (" + dateStr(e.ts) + " UTC). COPIA PREVIA GUARDADA EN backups/";
+    statusText = T("RESTAURADO: ","RESTORED: ") + trimName(e.name, 30) + " (" + dateStr(e.ts) + " UTC)" + (dlAvg > 0 ? " [" + T("MEDIA ","AVG ") + rateStr(dlAvg) + "]" : std::string()) + T(". COPIA PREVIA EN backups/",". SAFETY BACKUP IN backups/");
 }
 
 // ---------------- pantallas ----------------
@@ -389,10 +446,10 @@ void clampList(int& sel, int& scr, int n) {
 }
 
 void drawMain() {
-    drawHeader(cloudReady() ? "NUBE: LISTA" : "NUBE: SIN CONFIGURAR");
+    drawHeader(cloudReady() ? T("NUBE: LISTA","CLOUD: READY") : T("NUBE: SIN CONFIGURAR","CLOUD: NOT SET UP"));
     fill(28,98,1224,500,C.panel);
-    text(54,112,"JUEGO",C.muted,1); text(420,112,"USUARIO",C.muted,1); text(600,112,"TAMANO",C.muted,1); text(720,112,"ESTADO",C.muted,1);
-    if(saves.empty()) text(54,150,"NO SE ENCONTRARON PARTIDAS DE USUARIO",C.muted,2);
+    text(54,112,T("JUEGO","GAME"),C.muted,1); text(420,112,T("USUARIO","USER"),C.muted,1); text(600,112,T("TAMANO","SIZE"),C.muted,1); text(720,112,T("ESTADO","STATUS"),C.muted,1);
+    if(saves.empty()) text(54,150,T("NO SE ENCONTRARON PARTIDAS DE USUARIO","NO USER SAVES FOUND"),C.muted,2);
     clampList(selMain, scrMain, (int)saves.size());
     for(int i = scrMain; i < (int)saves.size() && i < scrMain + 12; i++) {
         int yy = 136 + (i - scrMain) * 36;
@@ -403,21 +460,21 @@ void drawMain() {
         text(420,yy,trimName(s.nick,12),sel?C.text:C.muted,2,170);
         text(600,yy,sizeStr(s.size),sel?C.text:C.muted,2,110);
         bool u = unsynced(s), n = cloudNewer(s);
-        if(u && n) text(720,yy,"CONFLICTO",C.red,2);
-        else if(n) text(720,yy,"NUBE MAS NUEVA",C.cyan,2);
-        else if(u) text(720,yy,"SIN SUBIR",C.orange,2);
-        else text(720,yy,"AL DIA",C.green,2);
+        if(u && n) text(720,yy,T("CONFLICTO","CONFLICT"),C.red,2);
+        else if(n) text(720,yy,T("NUBE MAS NUEVA","CLOUD IS NEWER"),C.cyan,2);
+        else if(u) text(720,yy,T("SIN SUBIR","NOT UPLOADED"),C.orange,2);
+        else text(720,yy,T("AL DIA","UP TO DATE"),C.green,2);
     }
-    drawStatus("A SUBIR ESTA   Y SUBIR PENDIENTES   X VER NUBE / RESTAURAR   MINUS ACTUALIZAR NUBE   PLUS SALIR");
+    drawStatus(T("A SUBIR ESTA   Y SUBIR PENDIENTES   X VER NUBE / RESTAURAR   MINUS ACTUALIZAR NUBE   PLUS SALIR   ZL IDIOMA: ES","A UPLOAD THIS   Y UPLOAD PENDING   X CLOUD / RESTORE   MINUS REFRESH CLOUD   PLUS EXIT   ZL LANGUAGE: EN"));
     SDL_RenderPresent(renderer);
 }
 
 void drawCloud() {
-    drawHeader(std::to_string(cloud.size()) + " COPIAS EN LA NUBE");
+    drawHeader(std::to_string(cloud.size()) + T(" COPIAS EN LA NUBE"," COPIES IN THE CLOUD"));
     fill(28,98,1224,500,C.panel);
-    text(54,112,"JUEGO",C.muted,1); text(400,112,"USUARIO",C.muted,1); text(540,112,"CONSOLA",C.muted,1);
-    text(760,112,"FECHA (UTC)",C.muted,1); text(1000,112,"TAMANO",C.muted,1);
-    if(cloud.empty()) text(54,150,"LA NUBE ESTA VACIA. SUBE PARTIDAS DESDE LA PANTALLA PRINCIPAL",C.muted,2);
+    text(54,112,T("JUEGO","GAME"),C.muted,1); text(400,112,T("USUARIO","USER"),C.muted,1); text(540,112,T("CONSOLA","CONSOLE"),C.muted,1);
+    text(760,112,T("FECHA (UTC)","DATE (UTC)"),C.muted,1); text(1000,112,T("TAMANO","SIZE"),C.muted,1);
+    if(cloud.empty()) text(54,150,T("LA NUBE ESTA VACIA. SUBE PARTIDAS DESDE LA PANTALLA PRINCIPAL","THE CLOUD IS EMPTY. UPLOAD SAVES FROM THE MAIN SCREEN"),C.muted,2);
     clampList(selCloud, scrCloud, (int)cloud.size());
     for(int i = scrCloud; i < (int)cloud.size() && i < scrCloud + 12; i++) {
         int yy = 136 + (i - scrCloud) * 36;
@@ -431,29 +488,29 @@ void drawCloud() {
         text(760,yy,dateStr(e.ts),c,2,230);
         text(1000,yy,sizeStr(e.size),c,2,200);
     }
-    drawStatus("A RESTAURAR   B VOLVER   MINUS ACTUALIZAR NUBE   PLUS SALIR");
+    drawStatus(T("A RESTAURAR   B VOLVER   MINUS ACTUALIZAR NUBE   PLUS SALIR   ZL IDIOMA: ES","A RESTORE   B BACK   MINUS REFRESH CLOUD   PLUS EXIT   ZL LANGUAGE: EN"));
     SDL_RenderPresent(renderer);
 }
 
 void drawConfirm() {
-    drawHeader("CONFIRMAR");
+    drawHeader(T("CONFIRMAR","CONFIRM"));
     fill(28,98,1224,500,C.panel);
     if(confirmEntry < 0 || confirmEntry >= (int)cloud.size()) { SDL_RenderPresent(renderer); return; }
     const Entry& e = cloud[confirmEntry];
-    text(54,120,"RESTAURAR PARTIDA",C.accent,3);
+    text(54,120,T("RESTAURAR PARTIDA","RESTORE SAVE"),C.accent,3);
     text(54,175,trimName(e.name,44),C.text,3,1150);
-    text(54,225,"COPIA DE: "+e.nick+" EN "+e.console+" - "+dateStr(e.ts)+" UTC - "+sizeStr(e.size),C.muted,2,1150);
+    text(54,225,T("COPIA DE: ","BACKUP FROM: ")+e.nick+T(" EN "," ON ")+e.console+" - "+dateStr(e.ts)+" UTC - "+sizeStr(e.size),C.muted,2,1150);
     if(targets.empty()) {
-        text(54,300,"ESTE JUEGO NO TIENE PARTIDA EN ESTA CONSOLA.",C.red,2);
-        text(54,335,"ABRE EL JUEGO UNA VEZ, CREA UNA PARTIDA NUEVA Y GUARDA. LUEGO VUELVE AQUI.",C.muted,2,1150);
+        text(54,300,T("ESTE JUEGO NO TIENE PARTIDA EN ESTA CONSOLA.","THIS GAME HAS NO SAVE ON THIS CONSOLE."),C.red,2);
+        text(54,335,T("ABRE EL JUEGO UNA VEZ, CREA UNA PARTIDA NUEVA Y GUARDA. LUEGO VUELVE AQUI.","OPEN THE GAME ONCE, CREATE A NEW SAVE AND SAVE. THEN COME BACK HERE."),C.muted,2,1150);
     } else {
         const sv::LocalSave& t = saves[targets[targetSel]];
-        text(54,290,"SE ESCRIBIRA EN EL PERFIL:",C.muted,2);
+        text(54,290,T("SE ESCRIBIRA EN EL PERFIL:","IT WILL BE WRITTEN TO PROFILE:"),C.muted,2);
         text(54,325,"< "+t.nick+" >",C.cyan,3,600);
-        text(54,385,"SE SOBRESCRIBE LA PARTIDA ACTUAL DE ESE PERFIL.",C.orange,2,1150);
-        text(54,420,"ANTES SE HARA UNA COPIA DE SEGURIDAD EN LA SD (carpeta backups).",C.muted,2,1150);
+        text(54,385,T("SE SOBRESCRIBE LA PARTIDA ACTUAL DE ESE PERFIL.","THE CURRENT SAVE OF THAT PROFILE WILL BE OVERWRITTEN."),C.orange,2,1150);
+        text(54,420,T("ANTES SE HARA UNA COPIA DE SEGURIDAD EN LA SD (carpeta backups).","A SAFETY BACKUP WILL BE MADE FIRST ON THE SD (backups folder)."),C.muted,2,1150);
     }
-    drawStatus(targets.empty() ? "B VOLVER" : "A CONFIRMAR   B CANCELAR   IZQ/DER CAMBIAR PERFIL");
+    drawStatus(targets.empty() ? T("B VOLVER","B BACK") : T("A CONFIRMAR   B CANCELAR   IZQ/DER CAMBIAR PERFIL   ZL IDIOMA: ES","A CONFIRM   B CANCEL   LEFT/RIGHT CHANGE PROFILE   ZL LANGUAGE: EN"));
     SDL_RenderPresent(renderer);
 }
 
@@ -469,7 +526,7 @@ void openConfirm() {
 
 void analyzeSaves() {
     for(size_t i = 0; i < saves.size(); i++) {
-        busyStart("ANALIZANDO PARTIDAS", trimName(saves[i].name, 50));
+        busyStart(T("ANALIZANDO PARTIDAS","ANALYZING SAVES"), trimName(saves[i].name, 50));
         busyFrac = saves.empty() ? -1 : (double)i / (double)saves.size();
         busyDetail = "";
         cancelled = false;
@@ -492,6 +549,8 @@ void rescanLocal() {
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
+    langInit();
+    statusText = T("LISTO","READY");
     SocketInitConfig cfg = *socketGetDefaultInitConfig();
     cfg.tcp_tx_buf_size = 0x20000; cfg.tcp_rx_buf_size = 0x80000;
     cfg.tcp_tx_buf_max_size = 0x40000; cfg.tcp_rx_buf_max_size = 0x100000;
@@ -509,14 +568,15 @@ int main(int argc, char** argv) {
     loadState();
     if(tg::token.empty()) saveConfig();   // deja la plantilla lista para editar
     rescanLocal();
-    if(!netOk) statusText = "NO SE PUDO INICIAR LA RED";
-    else if(tg::token.empty()) statusText = "FALTA EL TOKEN: EDITA sdmc:/switch/SwitchSaveSync/config.ini EN EL PC";
-    else if(ensureCloud() && refreshIndex()) statusText = "LISTO. " + std::to_string(cloud.size()) + " COPIAS EN LA NUBE";
+    if(!netOk) statusText = T("NO SE PUDO INICIAR LA RED","COULD NOT START NETWORKING");
+    else if(tg::token.empty()) statusText = T("FALTA EL TOKEN: EDITA sdmc:/switch/SwitchSaveSync/config.ini EN EL PC","MISSING TOKEN: EDIT sdmc:/switch/SwitchSaveSync/config.ini ON A PC");
+    else if(ensureCloud() && refreshIndex()) statusText = T("LISTO. ","READY. ") + std::to_string(cloud.size()) + T(" COPIAS EN LA NUBE"," COPIES IN THE CLOUD");
 
     while(!quitApp && appletMainLoop()) {
         SDL_Event ev; while(SDL_PollEvent(&ev)) if(ev.type == SDL_QUIT) quitApp = true;
         u64 d = padDown();
         if(d & HidNpadButton_Plus) quitApp = true;
+        if(d & HidNpadButton_ZL) { langToggle(); statusText = T("LISTO","READY"); }
 
         if(screen == S_MAIN) {
             if(d & HidNpadButton_Down) selMain++;
@@ -526,7 +586,7 @@ int main(int argc, char** argv) {
             if((d & HidNpadButton_A) && netOk && !saves.empty()) uploadOne((size_t)selMain);
             if((d & HidNpadButton_Y) && netOk) uploadAllPending();
             if((d & HidNpadButton_X) && netOk) { if(ensureCloud() && refreshIndex()) screen = S_CLOUD; }
-            if((d & HidNpadButton_Minus) && netOk) { if(ensureCloud() && refreshIndex()) statusText = "NUBE ACTUALIZADA: " + std::to_string(cloud.size()) + " COPIAS"; }
+            if((d & HidNpadButton_Minus) && netOk) { if(ensureCloud() && refreshIndex()) statusText = T("NUBE ACTUALIZADA: ","CLOUD UPDATED: ") + std::to_string(cloud.size()) + T(" COPIAS"," COPIES"); }
             drawMain();
         } else if(screen == S_CLOUD) {
             if(d & HidNpadButton_Down) selCloud++;

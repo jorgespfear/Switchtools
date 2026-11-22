@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include "lang.hpp"
 
 namespace tg {
 
@@ -75,7 +76,7 @@ void setError(CURLcode r, CURL* c, const std::string& body) {
 bool call(const std::string& method, const std::string& query, std::string& out) {
     out.clear();
     CURL* c = handle(API + "bot" + token + "/" + method + (query.empty() ? "" : "?" + query));
-    if(!c) { lastError = "CURL NO INICIA"; return false; }
+    if(!c) { lastError = T("CURL NO INICIA","CURL FAILED TO START"); return false; }
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeStr);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &out);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 60L);
@@ -91,7 +92,7 @@ bool discoverChat() {
     std::string out;
     if(!call("getUpdates", "limit=100", out)) return false;
     size_t p = out.rfind("\"chat\":{\"id\":");
-    if(p == std::string::npos) { lastError = "ENVIA /START A TU BOT DESDE TELEGRAM"; return false; }
+    if(p == std::string::npos) { lastError = T("ENVIA /START A TU BOT DESDE TELEGRAM","SEND /START TO YOUR BOT IN TELEGRAM"); return false; }
     chatId = std::to_string(std::atoll(out.c_str() + p + 13));
     return true;
 }
@@ -100,7 +101,7 @@ bool getFilePath(const std::string& fileId, std::string& path) {
     std::string out;
     if(!call("getFile", "file_id=" + fileId, out)) return false;
     path = jsonStr(out, "file_path");
-    if(path.empty()) { lastError = "SIN RUTA DE ARCHIVO"; return false; }
+    if(path.empty()) { lastError = T("SIN RUTA DE ARCHIVO","NO FILE PATH RETURNED"); return false; }
     return true;
 }
 
@@ -108,7 +109,7 @@ bool download(const std::string& fileId, std::string* toStr, FILE* toFile) {
     std::string path;
     if(!getFilePath(fileId, path)) return false;
     CURL* c = handle(API + "file/bot" + token + "/" + path);
-    if(!c) { lastError = "CURL NO INICIA"; return false; }
+    if(!c) { lastError = T("CURL NO INICIA","CURL FAILED TO START"); return false; }
     if(toFile) { curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeFile); curl_easy_setopt(c, CURLOPT_WRITEDATA, toFile); }
     else       { curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeStr);  curl_easy_setopt(c, CURLOPT_WRITEDATA, toStr); }
     curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
@@ -144,7 +145,7 @@ bool sendDocument(FILE* f, uint64_t base, uint64_t size, const std::string& file
                   const std::string& caption, std::string& fileId, std::string& messageId) {
     std::string out;
     CURL* c = handle(API + "bot" + token + "/sendDocument");
-    if(!c) { lastError = "CURL NO INICIA"; return false; }
+    if(!c) { lastError = T("CURL NO INICIA","CURL FAILED TO START"); return false; }
     Part part{f, base, size, 0};
     std::fseek(f, (long)base, SEEK_SET);
     curl_mime* m = curl_mime_init(c);
@@ -166,7 +167,7 @@ bool sendDocument(FILE* f, uint64_t base, uint64_t size, const std::string& file
         size_t d = out.find("\"document\"");
         fileId = jsonStr(out, "file_id", d == std::string::npos ? 0 : d);
         messageId = std::to_string(jsonNum(out, "message_id"));
-        if(fileId.empty()) { ok = false; lastError = "RESPUESTA SIN FILE_ID"; }
+        if(fileId.empty()) { ok = false; lastError = T("RESPUESTA SIN FILE_ID","RESPONSE WITHOUT FILE_ID"); }
     } else setError(r, c, out);
     curl_mime_free(m);
     curl_easy_cleanup(c);
@@ -190,7 +191,7 @@ bool getIndex(std::string& text) {
 
 bool putIndex(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
-    if(!f) { lastError = "NO SE PUDO LEER EL INDICE LOCAL"; return false; }
+    if(!f) { lastError = T("NO SE PUDO LEER EL INDICE LOCAL","COULD NOT READ THE LOCAL INDEX"); return false; }
     std::fseek(f, 0, SEEK_END); long sz = std::ftell(f);
     std::string fileId, msgId, out;
     bool ok = sendDocument(f, 0, (uint64_t)sz, INDEX_NAME, "SwitchSaveSync index (no borrar)", fileId, msgId);
