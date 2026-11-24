@@ -14,7 +14,7 @@ INCLUDES    := include
 
 APP_TITLE   := Save Sync
 APP_AUTHOR  := Homebrew community
-APP_VERSION := 0.2.0
+APP_VERSION := 0.3.0
 
 SDL2CONFIG  := $(DEVKITPRO)/portlibs/switch/bin/sdl2-config
 
