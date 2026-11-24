@@ -1,6 +1,7 @@
 name: Build NRO
 on:
   push:
+    branches: ['**']
   workflow_dispatch:
   release:
     types: [published]
