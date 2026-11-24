@@ -1,7 +1,12 @@
 name: Build NRO
 on:
   push:
+    branches: ['**']
   workflow_dispatch:
+  release:
+    types: [published]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,19 +25,38 @@ jobs:
             sleep 30
           done
           dkp-pacman -S --noconfirm switch-sdl2 switch-curl
+      - name: Version desde la etiqueta (solo en releases o etiquetas v*)
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${{ github.event.release.tag_name || github.ref_name }}"
+          tag="${tag#v}"; tag="${tag#V}"
+          echo "MAKEVER=APP_VERSION=$tag" >> "$GITHUB_ENV"
+          echo "Version: $tag"
       - name: Compilar Storage Analyzer
-        run: make -C SwitchStorageAnalyzer
+        run: make -C SwitchStorageAnalyzer $MAKEVER
       - name: Compilar Speed Test
-        run: make -C SwitchSpeedTest
+        run: make -C SwitchSpeedTest $MAKEVER
       - name: Compilar SD Benchmark
-        run: make -C SDBenchmark
+        run: make -C SDBenchmark $MAKEVER
       - name: Compilar Save Sync
-        run: make -C SwitchSaveSync
+        run: make -C SwitchSaveSync $MAKEVER
       - name: Subir los .nro
         uses: actions/upload-artifact@v4
         with:
           name: SwitchTools-nro
           path: |
+            SwitchStorageAnalyzer/SwitchStorageAnalyzer.nro
+            SwitchSpeedTest/SwitchSpeedTest.nro
+            SDBenchmark/SDBenchmark.nro
+            SwitchSaveSync/SwitchSaveSync.nro
+      - name: Crear la release y adjuntar los .nro
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          name: SwitchTools ${{ github.event.release.tag_name || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: |
             SwitchStorageAnalyzer/SwitchStorageAnalyzer.nro
             SwitchSpeedTest/SwitchSpeedTest.nro
             SDBenchmark/SDBenchmark.nro
